@@ -3,6 +3,7 @@
 mod devices;
 mod hid;
 mod model;
+mod poller;
 
 /// VIDs we care about: Logitech, BenQ ZOWIE, Sony, Microsoft, 8BitDo.
 pub const VIDS: [u16; 5] = [0x046D, 0x04A5, 0x054C, 0x045E, 0x2DC8];
