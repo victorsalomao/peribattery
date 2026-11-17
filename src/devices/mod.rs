@@ -3,6 +3,7 @@
 pub mod dualsense;
 pub mod g435;
 pub mod hidpp;
+pub mod xbox;
 pub mod zowie;
 
 use crate::hid;
@@ -16,5 +17,7 @@ pub fn poll_all() -> Vec<DeviceStatus> {
     out.extend(hidpp::poll(&infos));
     out.extend(g435::poll(&infos));
     out.extend(dualsense::poll(&infos));
+    let pad_candidate = infos.iter().any(|i| i.vid == 0x045E || i.vid == xbox::VID_8BITDO);
+    out.extend(xbox::poll(pad_candidate));
     out
 }
