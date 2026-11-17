@@ -4,6 +4,8 @@ mod devices;
 mod hid;
 mod model;
 mod poller;
+mod settings;
+mod ui;
 
 /// VIDs we care about: Logitech, BenQ ZOWIE, Sony, Microsoft, 8BitDo.
 pub const VIDS: [u16; 5] = [0x046D, 0x04A5, 0x054C, 0x045E, 0x2DC8];
@@ -36,6 +38,30 @@ fn main() {
                 println!("{:<9?} {:<22} {}{}{}", s.kind, s.name, pct, mv, state);
             }
         }
-        _ => {}
+        _ => run_app(),
     }
+}
+
+/// First run installs a copy to %LOCALAPPDATA%\PeriBattery, turns on autostart and starts the
+/// installed copy. Every later start goes straight to the widget (one instance only).
+fn run_app() {
+    if !settings::is_installed() {
+        let copied = settings::ensure_installed();
+        settings::mark_installed();
+        settings::set_autostart(true);
+        if let Some(exe) = copied {
+            if std::process::Command::new(exe).spawn().is_ok() {
+                return;
+            }
+        }
+    }
+    let name: Vec<u16> = "Local\\PeriBattery".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        let m = windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+        if m.is_null() || GetLastError() == ERROR_ALREADY_EXISTS {
+            return; // already running
+        }
+    }
+    std::process::exit(ui::widget::run());
 }
