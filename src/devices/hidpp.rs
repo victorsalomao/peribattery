@@ -139,14 +139,33 @@ pub fn poll(infos: &[HidInfo]) -> Vec<DeviceStatus> {
     }) {
         let Some(dev) = HidDevice::open(info) else { continue };
         let mut link = DevLink { dev };
-        for idx in 1..=6u8 {
+        let (slots, full) = RECEIVERS_STATE.with(|s| {
+            let mut s = s.borrow_mut();
+            let st = s.entry(info.pid).or_default();
+            let full = st.last_full.map_or(true, |t| t.elapsed() >= FULL_SCAN_EVERY);
+            if full {
+                st.last_full = Some(std::time::Instant::now());
+            }
+            (slots_to_probe(&st.known, full), full)
+        });
+        let mut answered = Vec::new();
+        for idx in slots {
             let Ok(bat) = battery(&mut link, idx) else { continue }; // empty slot or asleep
+            answered.push(idx);
             let (pct, mv, charging) = match bat {
                 Battery::Percent { pct, charging } => (pct, None, charging),
                 Battery::Millivolts { mv, charging } => (interpolate(mv, &LIION_V, &LIION_P), Some(mv), charging),
                 Battery::None => continue,
             };
-            let (name, t) = device_name(&mut link, idx).unwrap_or_else(|| ("Logitech".into(), 0));
+            let cached = RECEIVERS_STATE.with(|s| s.borrow().get(&info.pid).and_then(|st| st.names.get(&idx).cloned()));
+            let (name, t) = match cached {
+                Some(n) => n,
+                None => {
+                    let n = device_name(&mut link, idx).map(|(n, t)| (pretty_name(&n), t)).unwrap_or_else(|| ("Logitech".into(), 0));
+                    RECEIVERS_STATE.with(|s| s.borrow_mut().entry(info.pid).or_default().names.insert(idx, n.clone()));
+                    n
+                }
+            };
             out.push(DeviceStatus {
                 key: format!("logi:{:04x}:{idx}", info.pid),
                 kind: kind_of(t),
@@ -158,6 +177,13 @@ pub fn poll(infos: &[HidInfo]) -> Vec<DeviceStatus> {
                 estimate: None,
             });
         }
+        RECEIVERS_STATE.with(|s| {
+            let mut s = s.borrow_mut();
+            let st = s.entry(info.pid).or_default();
+            if full {
+                st.known = answered; // a sleeping device rejoins on the next full scan
+            }
+        });
     }
     out
 }
@@ -248,5 +274,64 @@ mod tests {
         assert_eq!(match_reply(&rx, 1, 5, 0x1A), Some(Err(HidppErr::Unsupported)));
         rx[..5].copy_from_slice(&[0x11, 2, 5, 0x1A, 0]);
         assert_eq!(match_reply(&rx, 1, 5, 0x1A), None);
+    }
+}
+
+/// Receiver slots to query: all six on a full scan (or when none is known yet), otherwise only
+/// the slots that answered last time — empty slots each cost a full timeout.
+pub fn slots_to_probe(known: &[u8], full: bool) -> Vec<u8> {
+    if full || known.is_empty() {
+        (1..=6).collect()
+    } else {
+        known.to_vec()
+    }
+}
+
+const FULL_SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Per receiver: slots that answered, when the last full scan ran, and cached names.
+#[derive(Default)]
+struct ReceiverState {
+    known: Vec<u8>,
+    last_full: Option<std::time::Instant>,
+    names: std::collections::HashMap<u8, (String, u8)>,
+}
+
+thread_local! {
+    static RECEIVERS_STATE: std::cell::RefCell<std::collections::HashMap<u16, ReceiverState>> = Default::default();
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    #[test]
+    fn probes_known_slots_between_full_scans() {
+        assert_eq!(slots_to_probe(&[1], false), vec![1]);
+        assert_eq!(slots_to_probe(&[1], true), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(slots_to_probe(&[], false), vec![1, 2, 3, 4, 5, 6]);
+    }
+}
+
+/// "G915 WIRELESS RGB MECHANICAL GAMING KEYBOARD" → "Logitech G915".
+pub fn pretty_name(raw: &str) -> String {
+    const FILLER: [&str; 8] = ["WIRELESS", "RGB", "MECHANICAL", "GAMING", "KEYBOARD", "MOUSE", "HEADSET", "LIGHTSPEED"];
+    let model: Vec<&str> = raw.split_whitespace().filter(|w| !FILLER.contains(&w.to_ascii_uppercase().as_str())).collect();
+    if model.is_empty() {
+        "Logitech".into()
+    } else {
+        format!("Logitech {}", model.join(" "))
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn pretty_names() {
+        assert_eq!(pretty_name("G915 WIRELESS RGB MECHANICAL GAMING KEYBOARD"), "Logitech G915");
+        assert_eq!(pretty_name("PRO X SUPERLIGHT"), "Logitech PRO X SUPERLIGHT");
+        assert_eq!(pretty_name(""), "Logitech");
     }
 }

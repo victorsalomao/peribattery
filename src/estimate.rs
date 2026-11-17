@@ -26,7 +26,7 @@ impl ChargeTrend {
     }
 
     /// Voltage trend, plus the device's own percent when it reports one: on the ZOWIE dock the
-    /// mouse's % rises well before the mV does. +50 mV or +3% ⇒ charging; −20 mV or −3% ⇒ not.
+    /// mouse's % rises well before the mV does. +50 mV or +3% ⇒ charging; −20 mV and −3% ⇒ not (just −20 mV without a %).
     pub fn update_with_pct(&mut self, mv: u16, pct: Option<u8>) -> bool {
         let p = pct.unwrap_or(0);
         if !self.has {
@@ -39,7 +39,10 @@ impl ChargeTrend {
         } else if self.charging {
             self.peak = self.peak.max(mv);
             self.pct_peak = self.pct_peak.max(p);
-            if mv + 20 <= self.peak || (pct.is_some() && p + 3 <= self.pct_peak) {
+            // With a reported %, both must drop (single readings wobble while charging).
+            let mv_dropped = mv + 20 <= self.peak;
+            let stopped = if pct.is_some() { mv_dropped && p + 3 <= self.pct_peak } else { mv_dropped };
+            if stopped {
                 self.charging = false;
                 self.trough = mv;
                 self.pct_trough = p;
@@ -440,7 +443,9 @@ mod pct_trend_tests {
         assert!(t.update_with_pct(3738, Some(15)));
         assert!(t.update_with_pct(3900, Some(60)));
         assert!(t.update_with_pct(3899, Some(59))); // 1% wobble: still charging
-        assert!(!t.update_with_pct(3895, Some(57))); // -3% from peak: unplugged
+        assert!(t.update_with_pct(3895, Some(57))); // -3% but mV steady: a wobble, keep ⚡
+        assert!(t.update_with_pct(3878, Some(59))); // -22 mV but % steady: keep ⚡
+        assert!(!t.update_with_pct(3875, Some(56))); // both dropped: unplugged
     }
 
     #[test]

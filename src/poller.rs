@@ -7,10 +7,15 @@ use crate::model::{DeviceKind, DeviceStatus};
 
 pub const WM_APP_STATUS: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 
-/// How often a source is read. Fullscreen game ⇒ ×5.
+/// How often a source is read. One read is a few HID reports (microseconds of CPU); the G435
+/// session takes ~1.2 s, the HID++ scan a few round trips. Fullscreen game ⇒ ×4.
 pub fn interval_for(key: &str, gaming: bool) -> Duration {
-    let base = if key == "g435" { 120 } else { 60 };
-    Duration::from_secs(if gaming { base * 5 } else { base })
+    let base = match key {
+        "g435" => 60,
+        "logi" => 30,
+        _ => 15,
+    };
+    Duration::from_secs(if gaming { base * 4 } else { base })
 }
 
 fn is_controller(key: &str) -> bool {
@@ -112,9 +117,13 @@ pub fn start(ui: isize) -> PollerHandle {
                             for d in fresh.iter_mut() {
                                 let learned = *learned_cache.entry(d.key.clone()).or_insert_with(|| crate::settings::learned(&d.key));
                                 let tr = trackers.entry(d.key.clone()).or_default();
+                                let prev = last[i].iter().find(|p| p.key == d.key).map(|p| (p.percent, p.millivolts, p.charging, p.connected));
                                 if let Some((charging, rate)) = crate::estimate::annotate(d, tr, t, &learned) {
                                     crate::settings::save_rate(&d.key, charging, rate);
                                     learned_cache.remove(&d.key); // re-read the blended value next time
+                                }
+                                if prev != Some((d.percent, d.millivolts, d.charging, d.connected)) {
+                                    crate::diag::log(d);
                                 }
                             }
                             last[i] = fresh;
@@ -159,12 +168,14 @@ mod tests {
 
     #[test]
     fn interval_normal_and_gaming() {
-        assert_eq!(interval_for("zowie", false), Duration::from_secs(60));
-        assert_eq!(interval_for("zowie", true), Duration::from_secs(300));
-        assert_eq!(interval_for("g435", false), Duration::from_secs(120));
-        assert_eq!(interval_for("g435", true), Duration::from_secs(600));
-        assert_eq!(interval_for("pad", false), Duration::from_secs(60));
-        assert_eq!(interval_for("pad", true), Duration::from_secs(300));
+        assert_eq!(interval_for("zowie", false), Duration::from_secs(15));
+        assert_eq!(interval_for("zowie", true), Duration::from_secs(60));
+        assert_eq!(interval_for("ds", false), Duration::from_secs(15));
+        assert_eq!(interval_for("pad", false), Duration::from_secs(15));
+        assert_eq!(interval_for("logi", false), Duration::from_secs(30));
+        assert_eq!(interval_for("logi", true), Duration::from_secs(120));
+        assert_eq!(interval_for("g435", false), Duration::from_secs(60));
+        assert_eq!(interval_for("g435", true), Duration::from_secs(240));
     }
 
     #[test]

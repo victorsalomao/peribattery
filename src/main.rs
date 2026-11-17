@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod devices;
+mod diag;
 mod estimate;
 mod hid;
 mod model;
@@ -47,7 +48,8 @@ fn main() {
                 let learned = settings::learned(&s.key);
                 estimate::annotate(&mut s, &mut estimate::Tracker::default(), 0, &learned);
                 let mv = s.millivolts.map(|v| format!(" [{v} mV]")).unwrap_or_default();
-                println!("{:<9?} {}{}", s.kind, ui::widget::device_line(&s), mv);
+                println!("{:<9?} {}{}", s.kind, ui::widget::device_line(&s).replace("
+", " — "), mv);
             }
         }
         _ => run_app(),
