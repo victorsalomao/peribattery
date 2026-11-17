@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
+mod bench;
 mod devices;
 mod diag;
 mod estimate;
@@ -41,6 +42,10 @@ fn main() {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1500));
             }
+        }
+        "--bench" => {
+            attach_console();
+            bench::run();
         }
         "--once" => {
             attach_console();

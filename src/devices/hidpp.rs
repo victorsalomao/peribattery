@@ -42,20 +42,9 @@ pub fn feature_index(l: &mut dyn Link, idx: u8, feature: u16) -> Result<Option<u
     Ok((r[0] != 0).then_some(r[0]))
 }
 
+#[cfg(test)]
 pub fn battery(l: &mut dyn Link, idx: u8) -> Result<Battery, HidppErr> {
-    if let Some(f) = feature_index(l, idx, UNIFIED_BATTERY)? {
-        let r = l.request(idx, f, 0x1, &[])?; // get_status
-        return Ok(Battery::Percent { pct: r[0].min(100), charging: matches!(r[2], 1 | 2) });
-    }
-    if let Some(f) = feature_index(l, idx, BATTERY_STATUS)? {
-        let r = l.request(idx, f, 0x0, &[])?;
-        return Ok(Battery::Percent { pct: r[0].min(100), charging: matches!(r[2], 1 | 2 | 4) });
-    }
-    if let Some(f) = feature_index(l, idx, BATTERY_VOLTAGE)? {
-        let r = l.request(idx, f, 0x0, &[])?;
-        return Ok(Battery::Millivolts { mv: u16::from_be_bytes([r[0], r[1]]), charging: r[2] & 0x80 != 0 });
-    }
-    Ok(Battery::None)
+    battery_cached(l, idx, &mut None)
 }
 
 /// Matches a received long report against a request. `None` = not ours, keep reading.
@@ -142,7 +131,7 @@ pub fn poll(infos: &[HidInfo]) -> Vec<DeviceStatus> {
         let (slots, full) = RECEIVERS_STATE.with(|s| {
             let mut s = s.borrow_mut();
             let st = s.entry(info.pid).or_default();
-            let full = st.last_full.map_or(true, |t| t.elapsed() >= FULL_SCAN_EVERY);
+            let full = full_scan_due(st.last_full, st.known.is_empty(), std::time::Instant::now());
             if full {
                 st.last_full = Some(std::time::Instant::now());
             }
@@ -150,7 +139,17 @@ pub fn poll(infos: &[HidInfo]) -> Vec<DeviceStatus> {
         });
         let mut answered = Vec::new();
         for idx in slots {
-            let Ok(bat) = battery(&mut link, idx) else { continue }; // empty slot or asleep
+            let mut fc = RECEIVERS_STATE.with(|s| s.borrow().get(&info.pid).and_then(|st| st.features.get(&idx).copied()));
+            let res = battery_cached(&mut link, idx, &mut fc);
+            RECEIVERS_STATE.with(|s| {
+                let mut s = s.borrow_mut();
+                let st = s.entry(info.pid).or_default();
+                match fc {
+                    Some(v) => st.features.insert(idx, v),
+                    None => st.features.remove(&idx),
+                };
+            });
+            let Ok(bat) = res else { continue }; // empty slot or asleep
             answered.push(idx);
             let (pct, mv, charging) = match bat {
                 Battery::Percent { pct, charging } => (pct, None, charging),
@@ -181,7 +180,7 @@ pub fn poll(infos: &[HidInfo]) -> Vec<DeviceStatus> {
             let mut s = s.borrow_mut();
             let st = s.entry(info.pid).or_default();
             if full {
-                st.known = answered; // a sleeping device rejoins on the next full scan
+                st.known = merge_known(&st.known, &answered);
             }
         });
     }
@@ -280,7 +279,7 @@ mod tests {
 /// Receiver slots to query: all six on a full scan (or when none is known yet), otherwise only
 /// the slots that answered last time — empty slots each cost a full timeout.
 pub fn slots_to_probe(known: &[u8], full: bool) -> Vec<u8> {
-    if full || known.is_empty() {
+    if full {
         (1..=6).collect()
     } else {
         known.to_vec()
@@ -295,6 +294,7 @@ struct ReceiverState {
     known: Vec<u8>,
     last_full: Option<std::time::Instant>,
     names: std::collections::HashMap<u8, (String, u8)>,
+    features: std::collections::HashMap<u8, (u16, u8)>,
 }
 
 thread_local! {
@@ -309,7 +309,7 @@ mod slot_tests {
     fn probes_known_slots_between_full_scans() {
         assert_eq!(slots_to_probe(&[1], false), vec![1]);
         assert_eq!(slots_to_probe(&[1], true), vec![1, 2, 3, 4, 5, 6]);
-        assert_eq!(slots_to_probe(&[], false), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(slots_to_probe(&[], false), Vec::<u8>::new()); // nothing known: wait for the next full scan
     }
 }
 
@@ -333,5 +333,111 @@ mod name_tests {
         assert_eq!(pretty_name("G915 WIRELESS RGB MECHANICAL GAMING KEYBOARD"), "Logitech G915");
         assert_eq!(pretty_name("PRO X SUPERLIGHT"), "Logitech PRO X SUPERLIGHT");
         assert_eq!(pretty_name(""), "Logitech");
+    }
+}
+
+/// Battery read that remembers which feature/index answered, so later reads skip the Root lookup.
+pub fn battery_cached(l: &mut dyn Link, idx: u8, cache: &mut Option<(u16, u8)>) -> Result<Battery, HidppErr> {
+    if let Some((feature, index)) = *cache {
+        match read_feature(l, idx, feature, index) {
+            Err(HidppErr::Unsupported) => *cache = None, // device changed: look up again
+            r => return r,
+        }
+    }
+    for feature in [UNIFIED_BATTERY, BATTERY_STATUS, BATTERY_VOLTAGE] {
+        if let Some(index) = feature_index(l, idx, feature)? {
+            *cache = Some((feature, index));
+            return read_feature(l, idx, feature, index);
+        }
+    }
+    Ok(Battery::None)
+}
+
+fn read_feature(l: &mut dyn Link, idx: u8, feature: u16, f: u8) -> Result<Battery, HidppErr> {
+    Ok(match feature {
+        UNIFIED_BATTERY => {
+            let r = l.request(idx, f, 0x1, &[])?; // get_status
+            Battery::Percent { pct: r[0].min(100), charging: matches!(r[2], 1 | 2) }
+        }
+        BATTERY_STATUS => {
+            let r = l.request(idx, f, 0x0, &[])?;
+            Battery::Percent { pct: r[0].min(100), charging: matches!(r[2], 1 | 2 | 4) }
+        }
+        _ => {
+            let r = l.request(idx, f, 0x0, &[])?;
+            Battery::Millivolts { mv: u16::from_be_bytes([r[0], r[1]]), charging: r[2] & 0x80 != 0 }
+        }
+    })
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    struct Counting {
+        calls: u32,
+    }
+    impl Link for Counting {
+        fn request(&mut self, _idx: u8, feat: u8, func: u8, params: &[u8]) -> Result<[u8; 16], HidppErr> {
+            self.calls += 1;
+            let mut r = [0u8; 16];
+            if feat == 0 && func == 0 {
+                // only 0x1001 present, at index 7
+                r[0] = if u16::from_be_bytes([params[0], params[1]]) == 0x1001 { 7 } else { 0 };
+            } else if feat == 7 {
+                r[..3].copy_from_slice(&[0x0F, 0xFB, 0x00]); // 4091 mV
+            }
+            Ok(r)
+        }
+    }
+
+    #[test]
+    fn second_read_is_a_single_request() {
+        let mut l = Counting { calls: 0 };
+        let mut cache = None;
+        assert_eq!(battery_cached(&mut l, 1, &mut cache), Ok(Battery::Millivolts { mv: 4091, charging: false }));
+        let first = l.calls; // 3 root lookups + 1 read
+        assert_eq!(cache, Some((0x1001, 7)));
+        assert_eq!(battery_cached(&mut l, 1, &mut cache), Ok(Battery::Millivolts { mv: 4091, charging: false }));
+        assert_eq!(l.calls - first, 1);
+    }
+}
+
+/// Full scan of all six slots: at start, then every 10 min — or every minute while no slot is
+/// known yet (e.g. the keyboard was asleep at startup).
+pub fn full_scan_due(last_full: Option<std::time::Instant>, known_empty: bool, now: std::time::Instant) -> bool {
+    let every = if known_empty { std::time::Duration::from_secs(60) } else { FULL_SCAN_EVERY };
+    last_full.map_or(true, |t| now.saturating_duration_since(t) >= every)
+}
+
+/// Slots to remember after a full scan: those that answered plus those known before (a sleeping
+/// keyboard keeps its slot).
+pub fn merge_known(old: &[u8], answered: &[u8]) -> Vec<u8> {
+    let mut v: Vec<u8> = old.iter().chain(answered).copied().collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn full_scan_schedule() {
+        let t = Instant::now();
+        assert!(full_scan_due(None, true, t));
+        assert!(!full_scan_due(Some(t), true, t + Duration::from_secs(30)));
+        assert!(full_scan_due(Some(t), true, t + Duration::from_secs(60)));
+        assert!(!full_scan_due(Some(t), false, t + Duration::from_secs(300)));
+        assert!(full_scan_due(Some(t), false, t + Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn sleeping_slot_stays_known() {
+        assert_eq!(merge_known(&[1], &[]), vec![1]);
+        assert_eq!(merge_known(&[1], &[2]), vec![1, 2]);
+        assert_eq!(merge_known(&[], &[3, 1]), vec![1, 3]);
     }
 }

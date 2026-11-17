@@ -29,6 +29,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input_XboxController",
     "Win32_Security",
     "Win32_System_SystemInformation",
+    "Win32_System_WindowsProgramming",
 ] }
 windows = { version = "0.58", features = ["Gaming_Input", "Devices_Power", "System_Power", "Foundation", "Foundation_Collections"] }
 

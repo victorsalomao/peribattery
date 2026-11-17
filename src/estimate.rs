@@ -26,7 +26,7 @@ impl ChargeTrend {
     }
 
     /// Voltage trend, plus the device's own percent when it reports one: on the ZOWIE dock the
-    /// mouse's % rises well before the mV does. +50 mV or +3% ⇒ charging; −20 mV and −3% ⇒ not (just −20 mV without a %).
+    /// mouse's % rises well before the mV does. +50 mV or +3% ⇒ charging; −20 mV or −3% ⇒ not.
     pub fn update_with_pct(&mut self, mv: u16, pct: Option<u8>) -> bool {
         let p = pct.unwrap_or(0);
         if !self.has {
@@ -39,9 +39,9 @@ impl ChargeTrend {
         } else if self.charging {
             self.peak = self.peak.max(mv);
             self.pct_peak = self.pct_peak.max(p);
-            // With a reported %, both must drop (single readings wobble while charging).
-            let mv_dropped = mv + 20 <= self.peak;
-            let stopped = if pct.is_some() { mv_dropped && p + 3 <= self.pct_peak } else { mv_dropped };
+            // Unplugging drops the device's own % at once (35% → 30% on the real ZOWIE log) while
+            // the mV sags slowly, so either signal ends the charge.
+            let stopped = mv + 20 <= self.peak || (pct.is_some() && p + 3 <= self.pct_peak);
             if stopped {
                 self.charging = false;
                 self.trough = mv;
@@ -443,9 +443,7 @@ mod pct_trend_tests {
         assert!(t.update_with_pct(3738, Some(15)));
         assert!(t.update_with_pct(3900, Some(60)));
         assert!(t.update_with_pct(3899, Some(59))); // 1% wobble: still charging
-        assert!(t.update_with_pct(3895, Some(57))); // -3% but mV steady: a wobble, keep ⚡
-        assert!(t.update_with_pct(3878, Some(59))); // -22 mV but % steady: keep ⚡
-        assert!(!t.update_with_pct(3875, Some(56))); // both dropped: unplugged
+        assert!(!t.update_with_pct(3895, Some(57))); // -3% from peak: unplugged
     }
 
     #[test]
@@ -453,5 +451,20 @@ mod pct_trend_tests {
         let mut t = ChargeTrend::default();
         assert!(!t.update_with_pct(3700, Some(30)));
         assert!(!t.update_with_pct(3705, Some(32))); // +2%: noise
+    }
+}
+
+#[cfg(test)]
+mod real_log_tests {
+    use super::*;
+
+    /// Victor's ZOWIE EC2-CW, diag.log 17/11: plugged at 20%, unplugged at 35%.
+    #[test]
+    fn zowie_unplug_is_seen_on_the_first_percent_drop() {
+        let mut t = ChargeTrend::default();
+        assert!(!t.update_with_pct(3758, Some(20)));
+        assert!(t.update_with_pct(3770, Some(25))); // +5%: charging
+        assert!(t.update_with_pct(3802, Some(35)));
+        assert!(!t.update_with_pct(3797, Some(30))); // unplugged: -5% at once, mV only -5
     }
 }

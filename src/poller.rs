@@ -7,15 +7,11 @@ use crate::model::{DeviceKind, DeviceStatus};
 
 pub const WM_APP_STATUS: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 
-/// How often a source is read. One read is a few HID reports (microseconds of CPU); the G435
-/// session takes ~1.2 s, the HID++ scan a few round trips. Fullscreen game ⇒ ×4.
-pub fn interval_for(key: &str, gaming: bool) -> Duration {
-    let base = match key {
-        "g435" => 60,
-        "logi" => 30,
-        _ => 15,
-    };
-    Duration::from_secs(if gaming { base * 4 } else { base })
+/// How often a source is read.
+pub fn interval_for(key: &str, _gaming: bool) -> Duration {
+    // Same in games: a read costs tens of µs of CPU once the device list and handles are cached.
+    // The G435 session is ~1 s of radio traffic to the headset, so it stays at 15 s.
+    Duration::from_secs(if key == "g435" { 15 } else { 5 })
 }
 
 fn is_controller(key: &str) -> bool {
@@ -105,11 +101,18 @@ pub fn start(ui: isize) -> PollerHandle {
             let started = Instant::now();
             let mut trackers: std::collections::HashMap<String, crate::estimate::Tracker> = Default::default();
             let mut learned_cache: std::collections::HashMap<String, crate::estimate::Learned> = Default::default();
+            let mut infos: Vec<crate::hid::HidInfo> = Vec::new();
+            let mut last_enum: Option<Instant> = None;
+            let mut woke = false;
             loop {
                 let now = Instant::now();
                 if due.iter().any(|d| *d <= now) {
-                    let infos = crate::hid::enumerate(&crate::VIDS);
-                    let g = gaming();
+                    if needs_enumeration(last_enum, woke, now) {
+                        infos = crate::hid::enumerate(&crate::VIDS);
+                        last_enum = Some(now);
+                        woke = false;
+                    }
+                    let g = false; // intervals no longer depend on games (see interval_for)
                     let t = started.elapsed().as_secs();
                     for (i, src) in Source::ALL.iter().enumerate() {
                         if due[i] <= now {
@@ -150,6 +153,7 @@ pub fn start(ui: isize) -> PollerHandle {
                     if wake_allowed(gaming(), last_forced, now) {
                         due = [now; 5];
                         last_forced = Some(now);
+                        woke = true; // something was plugged: refresh the device list
                     }
                 }
             }
@@ -166,17 +170,6 @@ mod tests {
         DeviceStatus { key: key.into(), kind, name: key.into(), percent: pct, millivolts: pct.map(|_| 3900), charging: false, connected, estimate: None }
     }
 
-    #[test]
-    fn interval_normal_and_gaming() {
-        assert_eq!(interval_for("zowie", false), Duration::from_secs(15));
-        assert_eq!(interval_for("zowie", true), Duration::from_secs(60));
-        assert_eq!(interval_for("ds", false), Duration::from_secs(15));
-        assert_eq!(interval_for("pad", false), Duration::from_secs(15));
-        assert_eq!(interval_for("logi", false), Duration::from_secs(30));
-        assert_eq!(interval_for("logi", true), Duration::from_secs(120));
-        assert_eq!(interval_for("g435", false), Duration::from_secs(60));
-        assert_eq!(interval_for("g435", true), Duration::from_secs(240));
-    }
 
     #[test]
     fn merge_keeps_last_known_when_off() {
@@ -233,4 +226,36 @@ mod wake_tests {
 /// A forced (device-change / resume) read while gaming is allowed at most once a minute.
 pub fn wake_allowed(gaming: bool, last_forced: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     !gaming || last_forced.map_or(true, |t| now.saturating_duration_since(t) >= Duration::from_secs(60))
+}
+
+/// The HID device list only changes when something is plugged (we get woken for that);
+/// a slow safety refresh covers missed notifications.
+pub fn needs_enumeration(last: Option<std::time::Instant>, woke: bool, now: std::time::Instant) -> bool {
+    woke || last.map_or(true, |t| now.saturating_duration_since(t) >= Duration::from_secs(300))
+}
+
+#[cfg(test)]
+mod enum_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn enumerate_on_start_on_wake_and_every_5_min() {
+        let t0 = Instant::now();
+        assert!(needs_enumeration(None, false, t0));
+        assert!(!needs_enumeration(Some(t0), false, t0 + Duration::from_secs(60)));
+        assert!(needs_enumeration(Some(t0), true, t0 + Duration::from_secs(1)));
+        assert!(needs_enumeration(Some(t0), false, t0 + Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn intervals_are_short_even_in_games() {
+        for g in [false, true] {
+            assert_eq!(interval_for("zowie", g), Duration::from_secs(5));
+            assert_eq!(interval_for("logi", g), Duration::from_secs(5));
+            assert_eq!(interval_for("ds", g), Duration::from_secs(5));
+            assert_eq!(interval_for("pad", g), Duration::from_secs(5));
+            assert_eq!(interval_for("g435", g), Duration::from_secs(15));
+        }
+    }
 }

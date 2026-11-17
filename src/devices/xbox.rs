@@ -129,6 +129,11 @@ fn status(n: usize, vid: u16, r: Reading) -> Option<DeviceStatus> {
 
 /// `candidate`: the HID scan saw a Microsoft/8BitDo device. WinRT is loaded only then.
 pub fn poll(candidate: bool) -> Vec<DeviceStatus> {
+    let now = std::time::Instant::now();
+    if !xinput_due(candidate, LAST_XINPUT.with(|c| c.get()), now) {
+        return LAST_PADS.with(|p| p.borrow().clone()); // not probed this time: keep what we saw
+    }
+    LAST_XINPUT.with(|c| c.set(Some(now)));
     let xinput: Vec<(u32, Option<u8>)> = (0..4).filter_map(|s| xinput_slot(s).map(|b| (s, b))).collect();
     if !candidate && xinput.is_empty() {
         return Vec::new();
@@ -146,6 +151,7 @@ pub fn poll(candidate: bool) -> Vec<DeviceStatus> {
             }
         }
     }
+    LAST_PADS.with(|p| *p.borrow_mut() = out.clone());
     out
 }
 
@@ -174,5 +180,31 @@ mod tests {
     fn wired_non_8bitdo_hidden() {
         // Wired pads and Steam Input's virtual pads have no battery: do not show ghosts.
         assert_eq!(classify(0x045E, Some((0, 0, Status::NotPresent)), true), Reading::Absent);
+    }
+}
+
+/// Without a Microsoft/8BitDo HID device, probe XInput only once a minute (pads behind the Xbox
+/// Wireless Adapter may not show up in HID); with one, every poll.
+pub fn xinput_due(candidate: bool, last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    candidate || last.map_or(true, |t| now.saturating_duration_since(t) >= std::time::Duration::from_secs(60))
+}
+
+thread_local! {
+    static LAST_XINPUT: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    static LAST_PADS: std::cell::RefCell<Vec<DeviceStatus>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+mod due_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn xinput_probe_is_rare_without_a_candidate() {
+        let t = Instant::now();
+        assert!(xinput_due(true, Some(t), t));
+        assert!(xinput_due(false, None, t));
+        assert!(!xinput_due(false, Some(t), t + Duration::from_secs(5)));
+        assert!(xinput_due(false, Some(t), t + Duration::from_secs(60)));
     }
 }
