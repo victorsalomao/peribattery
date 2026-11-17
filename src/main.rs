@@ -30,6 +30,17 @@ fn main() {
                 );
             }
         }
+        "--dump" => {
+            attach_console();
+            let infos = hid::enumerate(&VIDS);
+            for _ in 0..3 {
+                match devices::zowie::raw(&infos) {
+                    Some(r) => println!("zowie: {}", r.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")),
+                    None => println!("zowie: sem resposta"),
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+            }
+        }
         "--once" => {
             attach_console();
             for mut s in devices::poll_all() {

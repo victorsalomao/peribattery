@@ -84,3 +84,18 @@ mod tests {
         assert_eq!(parse(&[0x68]), None);
     }
 }
+
+/// Raw status reply (diagnostics: `--dump`).
+pub fn raw(infos: &[HidInfo]) -> Option<Vec<u8>> {
+    let info = infos.iter().find(|i| {
+        i.vid == VID && (i.pid == PID_RECEIVER || i.pid == PID_CABLE) && (i.usage_page >= 0xFF00 || i.usage_page == 0x00FF) && i.out_len == 65
+    })?;
+    let dev = HidDevice::open(info)?;
+    dev.flush();
+    if !dev.write(&[0x00, 0xA5, 0x03]) {
+        return None;
+    }
+    let mut buf = [0u8; 65];
+    let n = dev.read_timeout(&mut buf, 1000)?;
+    Some(buf[..n.min(17)].to_vec())
+}

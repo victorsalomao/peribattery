@@ -42,7 +42,7 @@ struct App {
     items: Vec<DeviceStatus>,
     width: i32,
     taskbar_created: u32,
-    tip_text: Vec<u16>,
+    tool_count: usize,
     tray_icon: bool,
     menu_keys: Vec<String>,
     trimmed: bool,
@@ -161,6 +161,7 @@ unsafe fn ensure_widget() {
         a.widget = w;
         a.tooltip = tip;
         a.width = 0;
+        a.tool_count = 0;
     });
     redraw();
 }
@@ -186,21 +187,36 @@ unsafe fn create_tooltip(owner: HWND, widget: HWND) -> HWND {
     if tip.is_null() {
         return tip;
     }
-    let mut empty = wide("");
-    let mut ti = tool_info(widget, owner, empty.as_mut_ptr());
-    SendMessageW(tip, TTM_ADDTOOLW, 0, &mut ti as *mut _ as LPARAM);
+    let _ = widget; // tools (one per device) are added after each draw
     SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, 600);
     tip
 }
 
-unsafe fn tool_info(widget: HWND, owner: HWND, text: *mut u16) -> TTTOOLINFOW {
-    let mut ti: TTTOOLINFOW = zeroed();
-    ti.cbSize = size_of::<TTTOOLINFOW>() as u32;
-    ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
-    ti.hwnd = owner;
-    ti.uId = widget as usize;
-    ti.lpszText = text;
-    ti
+/// One tooltip zone per device: hovering the mouse shows only the mouse, and so on.
+unsafe fn set_device_tools(spans: &[(i32, i32)], texts: &[String], height: i32) {
+    let (tip, widget, old) = with(|a| (a.tooltip, a.widget, a.tool_count));
+    if tip.is_null() || widget.is_null() {
+        return;
+    }
+    for id in 0..old {
+        let mut ti: TTTOOLINFOW = zeroed();
+        ti.cbSize = size_of::<TTTOOLINFOW>() as u32;
+        ti.hwnd = widget;
+        ti.uId = id;
+        SendMessageW(tip, TTM_DELTOOLW, 0, &mut ti as *mut _ as LPARAM);
+    }
+    for (id, (&(x0, x1), text)) in spans.iter().zip(texts).enumerate() {
+        let mut t = wide(text); // the control keeps its own copy
+        let mut ti: TTTOOLINFOW = zeroed();
+        ti.cbSize = size_of::<TTTOOLINFOW>() as u32;
+        ti.uFlags = TTF_SUBCLASS;
+        ti.hwnd = widget;
+        ti.uId = id;
+        ti.rect = RECT { left: x0, top: 0, right: x1, bottom: height };
+        ti.lpszText = t.as_mut_ptr();
+        SendMessageW(tip, TTM_ADDTOOLW, 0, &mut ti as *mut _ as LPARAM);
+    }
+    with(|a| a.tool_count = spans.len().min(texts.len()));
 }
 
 fn tooltip_text(items: &[DeviceStatus]) -> String {
@@ -248,7 +264,9 @@ unsafe fn redraw() {
         return;
     }
     let Some(env) = draw_env() else { return };
-    let width = render::draw(widget, &shown, env.0, env.1, env.2);
+    let (width, spans) = render::draw(widget, &shown, env.0, env.1, env.2);
+    let texts: Vec<String> = shown.iter().map(device_line).collect();
+    set_device_tools(&spans, &texts, env.1);
     with(|a| {
         a.width = width;
         a.drawn = Some(env);
@@ -276,16 +294,8 @@ unsafe fn refresh_if_stale() {
     }
 }
 
+/// Fallback tray icon: one tooltip with every device.
 unsafe fn update_tooltip(text: &str) {
-    let (tip, widget, controller) = with(|a| {
-        a.tip_text = wide(text);
-        (a.tooltip, a.widget, a.controller)
-    });
-    if !tip.is_null() {
-        let ptr = with(|a| a.tip_text.as_mut_ptr());
-        let ti = tool_info(widget, controller, ptr);
-        SendMessageW(tip, TTM_UPDATETIPTEXTW, 0, &ti as *const _ as LPARAM);
-    }
     if with(|a| a.tray_icon) {
         let mut nid = notify_data();
         nid.uFlags = NIF_TIP | NIF_SHOWTIP;

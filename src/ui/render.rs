@@ -27,6 +27,8 @@ pub struct Seg {
     pub color: u32, // 0xRRGGBB
     pub opacity: u32,
     pub gap_after: i32,
+    /// Index of the device this segment belongs to.
+    pub device: usize,
 }
 
 /// Devices to draw: everything not hidden by the user.
@@ -56,7 +58,7 @@ pub fn segments(items: &[DeviceStatus], dpi: u32, light: bool) -> Vec<Seg> {
             _ => fg,
         };
         let label = d.percent.map(|p| format!("{p}%")).unwrap_or_else(|| "—".into());
-        let seg = |text: Vec<u16>, icon: bool, color: u32, gap_after: i32| Seg { text, icon, color, opacity, gap_after };
+        let seg = |text: Vec<u16>, icon: bool, color: u32, gap_after: i32| Seg { text, icon, color, opacity, gap_after, device: i };
         out.push(seg(vec![icon(d.kind) as u16], true, color, scale(5, dpi)));
         if charging {
             out.push(seg(utf16(&label), false, color, scale(2, dpi)));
@@ -80,8 +82,30 @@ pub fn layout(segs: &[Seg], dpi: u32, measure: &dyn Fn(&Seg) -> i32) -> (i32, Ve
     (if segs.is_empty() { 0 } else { x + pad }, xs)
 }
 
-/// Draws `items` into `hwnd` (a layered window) and returns the width used.
-pub unsafe fn draw(hwnd: windows_sys::Win32::Foundation::HWND, items: &[DeviceStatus], dpi: u32, height: i32, light: bool) -> i32 {
+/// Horizontal (start, end) of each device on the strip, for per-device tooltips.
+pub fn device_spans(segs: &[Seg], xs: &[i32], width: i32, devices: usize) -> Vec<(i32, i32)> {
+    let mut spans = Vec::with_capacity(devices);
+    for k in 0..devices {
+        let start = if k == 0 {
+            0
+        } else {
+            match segs.iter().position(|s| s.device == k) {
+                // Split the gap between the previous device and this one in half.
+                Some(i) if i > 0 => xs.get(i).copied().unwrap_or(width) - segs[i - 1].gap_after / 2,
+                _ => width,
+            }
+        };
+        if let Some(prev) = spans.last_mut() {
+            let p: &mut (i32, i32) = prev;
+            p.1 = start;
+        }
+        spans.push((start, width));
+    }
+    spans
+}
+
+/// Draws `items` into `hwnd` (a layered window); returns the width and each device's x span.
+pub unsafe fn draw(hwnd: windows_sys::Win32::Foundation::HWND, items: &[DeviceStatus], dpi: u32, height: i32, light: bool) -> (i32, Vec<(i32, i32)>) {
     use std::mem::{size_of, zeroed};
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::Foundation::{POINT, SIZE};
@@ -103,6 +127,7 @@ pub unsafe fn draw(hwnd: windows_sys::Win32::Foundation::HWND, items: &[DeviceSt
         sz.cx
     };
     let (width, xs) = layout(&segs, dpi, &measure);
+    let spans = device_spans(&segs, &xs, width, items.len());
     for (i, s) in segs.iter().enumerate() {
         SelectObject(dc, if s.icon { icon_font } else { text_font });
         let mut sz: SIZE = zeroed();
@@ -113,7 +138,7 @@ pub unsafe fn draw(hwnd: windows_sys::Win32::Foundation::HWND, items: &[DeviceSt
         DeleteObject(text_font);
         DeleteObject(icon_font);
         DeleteDC(dc);
-        return 0;
+        return (0, Vec::new());
     }
 
     let mut bi: BITMAPINFO = zeroed();
@@ -129,7 +154,7 @@ pub unsafe fn draw(hwnd: windows_sys::Win32::Foundation::HWND, items: &[DeviceSt
         DeleteObject(text_font);
         DeleteObject(icon_font);
         DeleteDC(dc);
-        return width;
+        return (width, spans);
     }
     let old = SelectObject(dc, bmp);
     SetBkMode(dc, TRANSPARENT as _);
@@ -171,7 +196,7 @@ pub unsafe fn draw(hwnd: windows_sys::Win32::Foundation::HWND, items: &[DeviceSt
     DeleteObject(text_font);
     DeleteObject(icon_font);
     DeleteDC(dc);
-    width
+    (width, spans)
 }
 
 unsafe fn font(face: &str, height: i32) -> windows_sys::Win32::Graphics::Gdi::HFONT {
@@ -249,4 +274,27 @@ mod redraw_tests {
 /// (dpi, taskbar height, light theme) the bitmap was drawn for vs. now.
 pub fn needs_redraw(last: Option<(u32, i32, bool)>, now: (u32, i32, bool)) -> bool {
     last != Some(now)
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+
+    fn d(key: &str, kind: DeviceKind, charging: bool) -> DeviceStatus {
+        DeviceStatus { key: key.into(), kind, name: key.into(), percent: Some(50), millivolts: None, charging, connected: true, estimate: None }
+    }
+
+    #[test]
+    fn one_span_per_device_covering_its_segments() {
+        let items = [d("g435", DeviceKind::Headset, false), d("zowie", DeviceKind::Mouse, true)];
+        let segs = segments(&items, 96, false);
+        let measure = |s: &Seg| s.text.len() as i32 * 10;
+        let (width, xs) = layout(&segs, 96, &measure);
+        let spans = device_spans(&segs, &xs, width, items.len());
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].0, 0); // first device starts at the left edge (incl. padding)
+        assert_eq!(spans[0].1, spans[1].0); // contiguous: no dead zone between devices
+        assert_eq!(spans[1].1, width); // last device reaches the right edge
+        assert!(spans[1].0 > xs[1] && spans[1].0 <= xs[2]); // boundary sits in the gap before the mouse icon
+    }
 }

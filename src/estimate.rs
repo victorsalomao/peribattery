@@ -15,26 +15,42 @@ pub struct ChargeTrend {
     charging: bool,
     peak: u16,
     trough: u16,
+    pct_peak: u8,
+    pct_trough: u8,
 }
 
 impl ChargeTrend {
+    #[cfg(test)]
     pub fn update(&mut self, mv: u16) -> bool {
+        self.update_with_pct(mv, None)
+    }
+
+    /// Voltage trend, plus the device's own percent when it reports one: on the ZOWIE dock the
+    /// mouse's % rises well before the mV does. +50 mV or +3% ⇒ charging; −20 mV or −3% ⇒ not.
+    pub fn update_with_pct(&mut self, mv: u16, pct: Option<u8>) -> bool {
+        let p = pct.unwrap_or(0);
         if !self.has {
             self.has = true;
             self.charging = mv >= 4250; // a resting Li-ion cell never sits above ~4.2 V
             self.peak = mv;
             self.trough = mv;
+            self.pct_peak = p;
+            self.pct_trough = p;
         } else if self.charging {
             self.peak = self.peak.max(mv);
-            if mv + 20 <= self.peak {
+            self.pct_peak = self.pct_peak.max(p);
+            if mv + 20 <= self.peak || (pct.is_some() && p + 3 <= self.pct_peak) {
                 self.charging = false;
                 self.trough = mv;
+                self.pct_trough = p;
             }
         } else {
             self.trough = self.trough.min(mv);
-            if mv >= self.trough + 50 {
+            self.pct_trough = self.pct_trough.min(p);
+            if mv >= self.trough + 50 || (pct.is_some() && p >= self.pct_trough + 3) {
                 self.charging = true;
                 self.peak = mv;
+                self.pct_peak = p;
             }
         }
         self.charging
@@ -286,7 +302,9 @@ pub fn annotate(d: &mut crate::model::DeviceStatus, tr: &mut Tracker, t: u64, le
     }
     if uses_trend(&d.key) {
         if let Some(mv) = d.millivolts {
-            let rising = tr.trend.update(mv);
+            // ZOWIE reports its own %; the G435 % is derived from mV, so only mV counts there.
+            let own_pct = if d.key == "zowie" { d.percent } else { None };
+            let rising = tr.trend.update_with_pct(mv, own_pct);
             d.charging = d.charging || rising;
         }
     }
@@ -407,5 +425,28 @@ pub fn coarse(m: u32) -> u32 {
         0..=59 => m,
         60..=599 => (m + 5) / 10 * 10,
         _ => (m + 30) / 60 * 60,
+    }
+}
+
+#[cfg(test)]
+mod pct_trend_tests {
+    use super::*;
+
+    #[test]
+    fn mouse_reported_percent_rise_marks_charging() {
+        // Real ZOWIE EC2-CW on its dock: 3713 mV 10% → 3738 mV 15% (+25 mV only).
+        let mut t = ChargeTrend::default();
+        assert!(!t.update_with_pct(3713, Some(10)));
+        assert!(t.update_with_pct(3738, Some(15)));
+        assert!(t.update_with_pct(3900, Some(60)));
+        assert!(t.update_with_pct(3899, Some(59))); // 1% wobble: still charging
+        assert!(!t.update_with_pct(3895, Some(57))); // -3% from peak: unplugged
+    }
+
+    #[test]
+    fn percent_jitter_alone_is_not_charging() {
+        let mut t = ChargeTrend::default();
+        assert!(!t.update_with_pct(3700, Some(30)));
+        assert!(!t.update_with_pct(3705, Some(32))); // +2%: noise
     }
 }
