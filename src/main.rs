@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod devices;
+mod estimate;
 mod hid;
 mod model;
 mod poller;
