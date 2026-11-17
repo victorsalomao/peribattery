@@ -116,7 +116,8 @@ fn device_name(l: &mut dyn Link, idx: u8) -> Option<(String, u8)> {
 fn kind_of(t: u8) -> DeviceKind {
     match t {
         3..=5 => DeviceKind::Mouse,
-        8 => DeviceKind::Headset,
+        8 | 14 | 15 => DeviceKind::Headset, // headset, speaker, microphone
+        10..=12 => DeviceKind::Gamepad,     // wheel, joystick, gamepad
         _ => DeviceKind::Keyboard,
     }
 }
@@ -439,5 +440,20 @@ mod scan_tests {
         assert_eq!(merge_known(&[1], &[]), vec![1]);
         assert_eq!(merge_known(&[1], &[2]), vec![1, 2]);
         assert_eq!(merge_known(&[], &[3, 1]), vec![1, 3]);
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::*;
+
+    #[test]
+    fn hidpp_device_types() {
+        assert_eq!(kind_of(0), DeviceKind::Keyboard);
+        assert_eq!(kind_of(3), DeviceKind::Mouse);
+        assert_eq!(kind_of(8), DeviceKind::Headset);
+        assert_eq!(kind_of(12), DeviceKind::Gamepad); // gamepad
+        assert_eq!(kind_of(10), DeviceKind::Gamepad); // steering wheel
+        assert_eq!(kind_of(14), DeviceKind::Headset); // speaker
     }
 }

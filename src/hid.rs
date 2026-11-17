@@ -37,6 +37,15 @@ fn hex_after(path: &str, tag: &str) -> Option<u16> {
     u16::from_str_radix(path.get(i..i + 4)?, 16).ok()
 }
 
+/// (vid, pid) from a lowercase HID path: USB `vid_xxxx&pid_xxxx`, Bluetooth `vid&0002xxxx_pid&xxxx`.
+fn vid_pid(path: &str) -> (Option<u16>, Option<u16>) {
+    let bt = |tag: &str| {
+        let i = path.find(tag)? + tag.len();
+        u16::from_str_radix(path.get(i + 4..i + 8)?, 16).ok() // skip the 000x source prefix
+    };
+    (hex_after(path, "vid_").or_else(|| bt("vid&")), hex_after(path, "pid_").or_else(|| hex_after(path, "pid&")))
+}
+
 /// Lists HID collections whose vendor id is in `filter_vid`. Devices of other vendors are
 /// skipped by path before being opened.
 pub fn enumerate(filter_vid: &[u16]) -> Vec<HidInfo> {
@@ -72,13 +81,13 @@ pub fn enumerate(filter_vid: &[u16]) -> Vec<HidInfo> {
             }
             let wide = std::slice::from_raw_parts(p, len);
             let lower = String::from_utf16_lossy(wide).to_ascii_lowercase();
-            let Some(vid) = hex_after(&lower, "vid_") else { continue };
+            let (Some(vid), pid) = vid_pid(&lower) else { continue };
             if !filter_vid.contains(&vid) {
                 continue;
             }
             let mut path = wide.to_vec();
             path.push(0);
-            if let Some(info) = caps(path, vid, hex_after(&lower, "pid_").unwrap_or(0)) {
+            if let Some(info) = caps(path, vid, pid.unwrap_or(0)) {
                 out.push(info);
             }
         }
@@ -221,5 +230,18 @@ mod tests {
         assert_eq!(hex_after(p, "vid_"), Some(0x046D));
         assert_eq!(hex_after(p, "pid_"), Some(0xC547));
         assert_eq!(hex_after(r"\\?\hid#vhf", "vid_"), None);
+    }
+}
+
+#[cfg(test)]
+mod bt_path_tests {
+    use super::*;
+
+    #[test]
+    fn bluetooth_hid_paths_carry_vid_after_ampersand() {
+        let p = r"\?\hid#{00001124-0000-1000-8000-00805f9b34fb}_vid&0002054c_pid&0ce6&col01#9&2b7c9b0a&0&0000#{4d1e55b2}";
+        assert_eq!(vid_pid(p), (Some(0x054C), Some(0x0CE6)));
+        let usb = r"\?\hid#vid_046d&pid_c547&mi_02&col02#8&24348baf&0&0001#{4d1e55b2}";
+        assert_eq!(vid_pid(usb), (Some(0x046D), Some(0xC547)));
     }
 }
