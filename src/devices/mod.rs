@@ -1,5 +1,6 @@
 //! One module per protocol. Each `poll` opens, queries and closes; nothing stays open.
 
+pub mod hidpp;
 pub mod zowie;
 
 use crate::hid;
@@ -10,5 +11,6 @@ pub fn poll_all() -> Vec<DeviceStatus> {
     let infos = hid::enumerate(&crate::VIDS);
     let mut out = Vec::new();
     out.extend(zowie::poll(&infos));
+    out.extend(hidpp::poll(&infos));
     out
 }
