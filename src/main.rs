@@ -32,11 +32,11 @@ fn main() {
         }
         "--once" => {
             attach_console();
-            for s in devices::poll_all() {
-                let pct = s.percent.map(|p| format!("{p}%")).unwrap_or_else(|| "—".into());
-                let mv = s.millivolts.map(|v| format!(" {v} mV")).unwrap_or_default();
-                let state = if !s.connected { " (desligado)" } else if s.charging { " (carregando)" } else { "" };
-                println!("{:<9?} {:<22} {}{}{}", s.kind, s.name, pct, mv, state);
+            for mut s in devices::poll_all() {
+                let learned = settings::learned(&s.key);
+                estimate::annotate(&mut s, &mut estimate::Tracker::default(), 0, &learned);
+                let mv = s.millivolts.map(|v| format!(" [{v} mV]")).unwrap_or_default();
+                println!("{:<9?} {}{}", s.kind, ui::widget::device_line(&s), mv);
             }
         }
         _ => run_app(),

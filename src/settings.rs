@@ -166,3 +166,62 @@ pub fn install_action(me_is_target: bool, target_exists: bool, identical: bool) 
         InstallAction::Install
     }
 }
+
+const RATES_KEY: &str = r"Software\PeriBattery\Rates";
+
+/// "dis=1.42;chg=38.5" ⇄ Learned.
+fn parse_rates(s: &str) -> crate::estimate::Learned {
+    let mut l = crate::estimate::Learned::default();
+    for part in s.split(';') {
+        let Some((k, v)) = part.split_once('=') else { continue };
+        let v = v.trim().parse::<f32>().ok().filter(|r| r.is_finite() && *r > 0.0);
+        match k.trim() {
+            "dis" => l.discharge = v,
+            "chg" => l.charge = v,
+            _ => {}
+        }
+    }
+    l
+}
+
+fn format_rates(l: &crate::estimate::Learned) -> String {
+    let mut parts = Vec::new();
+    if let Some(d) = l.discharge {
+        parts.push(format!("dis={d:.2}"));
+    }
+    if let Some(c) = l.charge {
+        parts.push(format!("chg={c:.2}"));
+    }
+    parts.join(";")
+}
+
+/// Rates learned for a device in earlier runs.
+pub fn learned(key: &str) -> crate::estimate::Learned {
+    get_string(RATES_KEY, key).map(|s| parse_rates(&s)).unwrap_or_default()
+}
+
+/// Blends a freshly measured rate into the stored one.
+pub fn save_rate(key: &str, charging: bool, rate: f32) {
+    let mut l = learned(key);
+    if charging {
+        l.charge = Some(crate::estimate::blend(l.charge, rate));
+    } else {
+        l.discharge = Some(crate::estimate::blend(l.discharge, rate));
+    }
+    set_string(RATES_KEY, key, &format_rates(&l));
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    #[test]
+    fn rates_roundtrip() {
+        let l = parse_rates("dis=1.42;chg=38.5");
+        assert_eq!((l.discharge, l.charge), (Some(1.42), Some(38.5)));
+        assert_eq!(format_rates(&l), "dis=1.42;chg=38.50");
+        let l = parse_rates("chg=12");
+        assert_eq!((l.discharge, l.charge), (None, Some(12.0)));
+        assert_eq!(parse_rates("lixo").discharge, None);
+    }
+}

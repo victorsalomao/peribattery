@@ -254,3 +254,158 @@ mod tests {
         assert_eq!(blend(Some(4.0), 6.0), 5.0);
     }
 }
+
+/// Per-device state kept by the poller between reads.
+#[derive(Default, Clone, Debug)]
+pub struct Tracker {
+    trend: ChargeTrend,
+    history: History,
+    last_saved: Option<u64>,
+}
+
+/// Rates learned in earlier runs (%/h, both positive).
+#[derive(Default, Clone, Copy, Debug)]
+pub struct Learned {
+    pub discharge: Option<f32>,
+    pub charge: Option<f32>,
+}
+
+/// Devices that only report voltage: charging comes from the voltage trend.
+fn uses_trend(key: &str) -> bool {
+    key == "zowie" || key == "g435"
+}
+
+/// Fills `d.charging` (voltage trend where needed) and `d.estimate`. Returns
+/// `Some((charging, rate %/h))` when a freshly measured rate should be saved.
+pub fn annotate(d: &mut crate::model::DeviceStatus, tr: &mut Tracker, t: u64, learned: &Learned) -> Option<(bool, f32)> {
+    const SAVE_EVERY_S: u64 = 1800;
+    if !d.connected {
+        tr.history.clear();
+        d.estimate = None;
+        return None;
+    }
+    if uses_trend(&d.key) {
+        if let Some(mv) = d.millivolts {
+            let rising = tr.trend.update(mv);
+            d.charging = d.charging || rising;
+        }
+    }
+    let Some(pct) = d.percent else {
+        d.estimate = None;
+        return None;
+    };
+    tr.history.push(t, pct, d.charging);
+    // A slope pointing the wrong way is noise, not a measurement.
+    let measured = tr
+        .history
+        .rate_per_hour()
+        .filter(|r| if d.charging { *r > 0.0 } else { *r < 0.0 })
+        .map(f32::abs);
+    let mut save = None;
+    if let Some(r) = measured {
+        if tr.last_saved.map_or(true, |s| t >= s + SAVE_EVERY_S) {
+            tr.last_saved = Some(t);
+            save = Some((d.charging, r));
+        }
+    }
+    let pick = |m: Option<f32>, l: Option<f32>| m.map(|r| (r, Source::Measured)).or(l.map(|r| (r, Source::Learned)));
+    d.estimate = if d.charging {
+        match pick(measured, learned.charge) {
+            Some((r, source)) => Some(Estimate::Full { minutes: coarse(minutes_to_full(pct, r)), source }),
+            None => Some(Estimate::Calculating),
+        }
+    } else {
+        pick(measured, learned.discharge)
+            .or_else(|| factory_hours(&d.key, &d.name).map(|h| (100.0 / h, Source::Factory)))
+            .map(|(r, source)| Estimate::Empty { minutes: coarse(minutes_to_empty(pct, r)), source })
+    };
+    save
+}
+
+#[cfg(test)]
+mod annotate_tests {
+    use super::*;
+    use crate::model::{DeviceKind, DeviceStatus};
+
+    fn dev(key: &str, name: &str, pct: u8, mv: Option<u16>, charging: bool) -> DeviceStatus {
+        DeviceStatus { key: key.into(), kind: DeviceKind::Mouse, name: name.into(), percent: Some(pct), millivolts: mv, charging, connected: true, estimate: None }
+    }
+
+    #[test]
+    fn factory_estimate_when_no_data() {
+        let mut d = dev("zowie", "ZOWIE EC2-CW", 70, Some(3900), false);
+        let mut tr = Tracker::default();
+        annotate(&mut d, &mut tr, 0, &Learned::default());
+        // 70% of a 70 h battery = 49 h
+        assert_eq!(d.estimate, Some(Estimate::Empty { minutes: 2940, source: Source::Factory }));
+    }
+
+    #[test]
+    fn learned_beats_factory() {
+        let mut d = dev("zowie", "ZOWIE EC2-CW", 50, Some(3850), false);
+        let learned = Learned { discharge: Some(10.0), charge: None };
+        annotate(&mut d, &mut Tracker::default(), 0, &learned);
+        assert_eq!(d.estimate, Some(Estimate::Empty { minutes: 300, source: Source::Learned }));
+    }
+
+    #[test]
+    fn voltage_rise_marks_g435_charging_and_calculating() {
+        let mut tr = Tracker::default();
+        let mut d = dev("g435", "Logitech G435", 30, Some(3675), false);
+        annotate(&mut d, &mut tr, 0, &Learned::default());
+        assert!(!d.charging);
+        let mut d = dev("g435", "Logitech G435", 33, Some(3740), false);
+        annotate(&mut d, &mut tr, 120, &Learned::default());
+        assert!(d.charging);
+        assert_eq!(d.estimate, Some(Estimate::Calculating));
+    }
+
+    #[test]
+    fn measured_charge_rate_is_used_and_reported_for_saving() {
+        let mut tr = Tracker::default();
+        let mut saved = None;
+        for i in 0..5u64 {
+            // DualSense reports charging itself: +10% every 10 min = 60 %/h
+            let mut d = dev("ds", "DualSense", (20 + 10 * i) as u8, None, true);
+            if let Some(s) = annotate(&mut d, &mut tr, i * 600, &Learned::default()) {
+                saved = Some(s);
+            }
+            if i == 4 {
+                // 60% → 80% at 60 %/h = 20 min, 80% → 100% at 30 %/h = 40 min
+                assert_eq!(d.estimate, Some(Estimate::Full { minutes: 60, source: Source::Measured }));
+            }
+        }
+        let (charging, rate) = saved.expect("rate to save");
+        assert!(charging && (rate - 60.0).abs() < 0.1, "{rate}");
+    }
+
+    #[test]
+    fn disconnected_has_no_estimate() {
+        let mut d = dev("g435", "Logitech G435", 30, None, false);
+        d.connected = false;
+        annotate(&mut d, &mut Tracker::default(), 0, &Learned::default());
+        assert_eq!(d.estimate, None);
+    }
+}
+
+#[cfg(test)]
+mod coarse_tests {
+    use super::*;
+
+    #[test]
+    fn coarse_rounds_like_the_label() {
+        assert_eq!(coarse(45), 45);
+        assert_eq!(coarse(65), 70);
+        assert_eq!(coarse(661), 660);
+        assert_eq!(coarse(2165), 2160);
+    }
+}
+
+/// Rounds minutes to what the tooltip shows, so tiny changes don't trigger repaints.
+pub fn coarse(m: u32) -> u32 {
+    match m {
+        0..=59 => m,
+        60..=599 => (m + 5) / 10 * 10,
+        _ => (m + 30) / 60 * 60,
+    }
+}

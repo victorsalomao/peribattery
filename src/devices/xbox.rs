@@ -123,6 +123,7 @@ fn status(n: usize, vid: u16, r: Reading) -> Option<DeviceStatus> {
         millivolts: None,
         charging,
         connected: true,
+        estimate: None,
     })
 }
 

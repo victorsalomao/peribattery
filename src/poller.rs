@@ -97,14 +97,27 @@ pub fn start(ui: isize) -> PollerHandle {
             let mut due = [Instant::now(); 5];
             let mut sent: Vec<DeviceStatus> = Vec::new();
             let mut last_forced: Option<Instant> = None;
+            let started = Instant::now();
+            let mut trackers: std::collections::HashMap<String, crate::estimate::Tracker> = Default::default();
+            let mut learned_cache: std::collections::HashMap<String, crate::estimate::Learned> = Default::default();
             loop {
                 let now = Instant::now();
                 if due.iter().any(|d| *d <= now) {
                     let infos = crate::hid::enumerate(&crate::VIDS);
                     let g = gaming();
+                    let t = started.elapsed().as_secs();
                     for (i, src) in Source::ALL.iter().enumerate() {
                         if due[i] <= now {
-                            last[i] = merge(&last[i], src.poll(&infos));
+                            let mut fresh = merge(&last[i], src.poll(&infos));
+                            for d in fresh.iter_mut() {
+                                let learned = *learned_cache.entry(d.key.clone()).or_insert_with(|| crate::settings::learned(&d.key));
+                                let tr = trackers.entry(d.key.clone()).or_default();
+                                if let Some((charging, rate)) = crate::estimate::annotate(d, tr, t, &learned) {
+                                    crate::settings::save_rate(&d.key, charging, rate);
+                                    learned_cache.remove(&d.key); // re-read the blended value next time
+                                }
+                            }
+                            last[i] = fresh;
                             due[i] = Instant::now() + interval_for(src.key(), g);
                         }
                     }
@@ -141,7 +154,7 @@ mod tests {
     use super::*;
 
     fn dev(key: &str, kind: DeviceKind, pct: Option<u8>, connected: bool) -> DeviceStatus {
-        DeviceStatus { key: key.into(), kind, name: key.into(), percent: pct, millivolts: pct.map(|_| 3900), charging: false, connected }
+        DeviceStatus { key: key.into(), kind, name: key.into(), percent: pct, millivolts: pct.map(|_| 3900), charging: false, connected, estimate: None }
     }
 
     #[test]

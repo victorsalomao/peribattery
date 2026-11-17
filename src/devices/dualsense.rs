@@ -41,6 +41,7 @@ pub fn poll(infos: &[HidInfo]) -> Option<DeviceStatus> {
                     millivolts: None,
                     charging,
                     connected: true,
+                    estimate: None,
                 });
             }
         }

@@ -155,6 +155,7 @@ pub fn poll(infos: &[HidInfo]) -> Vec<DeviceStatus> {
                 millivolts: mv,
                 charging,
                 connected: true,
+                estimate: None,
             });
         }
     }

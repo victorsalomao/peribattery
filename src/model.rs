@@ -17,6 +17,8 @@ pub struct DeviceStatus {
     pub millivolts: Option<u16>,
     pub charging: bool,
     pub connected: bool,
+    /// Time to full / empty, filled in by the poller.
+    pub estimate: Option<crate::estimate::Estimate>,
 }
 
 /// Piecewise-linear voltage → percent. `volts` is descending and paired with `pcts`.

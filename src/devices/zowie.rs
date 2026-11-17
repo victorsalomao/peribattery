@@ -52,6 +52,7 @@ pub fn poll(infos: &[HidInfo]) -> Option<DeviceStatus> {
                 millivolts: (mv != 0).then_some(mv),
                 charging: pid == PID_CABLE,
                 connected: mv != 0,
+                estimate: None,
             });
         }
     }

@@ -191,7 +191,7 @@ mod tests {
     use super::*;
 
     fn dev(key: &str, kind: DeviceKind, pct: Option<u8>, charging: bool, connected: bool) -> DeviceStatus {
-        DeviceStatus { key: key.into(), kind, name: key.into(), percent: pct, millivolts: None, charging, connected }
+        DeviceStatus { key: key.into(), kind, name: key.into(), percent: pct, millivolts: None, charging, connected, estimate: None }
     }
 
     fn items() -> Vec<DeviceStatus> {

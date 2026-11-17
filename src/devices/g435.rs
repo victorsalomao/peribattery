@@ -129,6 +129,7 @@ pub fn poll(infos: &[HidInfo]) -> Option<DeviceStatus> {
         millivolts: mv,
         charging: false,
         connected: mv.is_some(),
+        estimate: None,
     })
 }
 

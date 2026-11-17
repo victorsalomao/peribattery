@@ -209,20 +209,34 @@ fn tooltip_text(items: &[DeviceStatus]) -> String {
     }
     items
         .iter()
-        .map(|d| {
-            let pct = d.percent.map(|p| format!("{p}%")).unwrap_or_else(|| "nível não informado".into());
-            let mv = d.millivolts.map(|v| format!(" ({v} mV)")).unwrap_or_default();
-            let state = if !d.connected {
-                " — desligado (último valor)"
-            } else if d.charging {
-                " — carregando"
-            } else {
-                ""
-            };
-            format!("{} — {pct}{mv}{state}", d.name)
-        })
+        .map(device_line)
         .collect::<Vec<_>>()
         .join("\r\n")
+}
+
+/// "Nome — ⚡ 45% — carregando · cheio em ~1 h 10 min (medido)"
+pub fn device_line(d: &DeviceStatus) -> String {
+    use crate::estimate::{format_minutes, Estimate, Source};
+    let Some(pct) = d.percent else {
+        let state = if d.connected { "conectado, nível não informado" } else { "desligado" };
+        return format!("{} — {state}", d.name);
+    };
+    if !d.connected {
+        return format!("{} — {pct}% — desligado (último valor)", d.name);
+    }
+    let label = |s: Source| match s {
+        Source::Measured => "medido",
+        Source::Learned => "aprendido",
+        Source::Factory => "média de fábrica",
+    };
+    let (bolt, state) = if d.charging { ("⚡ ", "carregando") } else { ("", "descarregando") };
+    let eta = match d.estimate {
+        Some(Estimate::Full { minutes, source }) => format!(" · cheio em {} ({})", format_minutes(minutes), label(source)),
+        Some(Estimate::Empty { minutes, source }) => format!(" · acaba em {} ({})", format_minutes(minutes), label(source)),
+        Some(Estimate::Calculating) => " · calculando tempo para encher…".to_string(),
+        None => String::new(),
+    };
+    format!("{} — {bolt}{pct}% — {state}{eta}", d.name)
 }
 
 /// Redraws the strip and re-places it. Called on new data, theme or DPI change.
@@ -504,5 +518,44 @@ unsafe extern "system" fn widget_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         }
         WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
         _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::estimate::{Estimate, Source};
+    use crate::model::DeviceKind;
+
+    fn dev(name: &str, pct: Option<u8>, charging: bool, connected: bool, estimate: Option<Estimate>) -> DeviceStatus {
+        DeviceStatus { key: name.into(), kind: DeviceKind::Headset, name: name.into(), percent: pct, millivolts: Some(3675), charging, connected, estimate }
+    }
+
+    #[test]
+    fn tooltip_discharging_with_estimate() {
+        let d = dev("Logitech G435", Some(30), false, true, Some(Estimate::Empty { minutes: 320, source: Source::Measured }));
+        assert_eq!(tooltip_text(&[d]), "Logitech G435 — 30% — descarregando · acaba em ~5 h 20 min (medido)");
+    }
+
+    #[test]
+    fn tooltip_charging_with_estimate_and_bolt() {
+        let d = dev("ZOWIE EC2-CW", Some(45), true, true, Some(Estimate::Full { minutes: 70, source: Source::Learned }));
+        assert_eq!(tooltip_text(&[d]), "ZOWIE EC2-CW — ⚡ 45% — carregando · cheio em ~1 h 10 min (aprendido)");
+    }
+
+    #[test]
+    fn tooltip_charging_calculating_and_factory() {
+        let d = dev("DualSense", Some(20), true, true, Some(Estimate::Calculating));
+        assert_eq!(tooltip_text(&[d]), "DualSense — ⚡ 20% — carregando · calculando tempo para encher…");
+        let d = dev("G915", Some(92), false, true, Some(Estimate::Empty { minutes: 2220, source: Source::Factory }));
+        assert_eq!(tooltip_text(&[d]), "G915 — 92% — descarregando · acaba em ~37 h (média de fábrica)");
+    }
+
+    #[test]
+    fn tooltip_off_and_unknown() {
+        let d = dev("Logitech G435", Some(30), false, false, None);
+        assert_eq!(tooltip_text(&[d]), "Logitech G435 — 30% — desligado (último valor)");
+        let d = dev("8BitDo", None, false, true, None);
+        assert_eq!(tooltip_text(&[d]), "8BitDo — conectado, nível não informado");
     }
 }
