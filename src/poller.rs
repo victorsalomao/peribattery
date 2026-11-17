@@ -96,6 +96,7 @@ pub fn start(ui: isize) -> PollerHandle {
             let mut last: [Vec<DeviceStatus>; 5] = Default::default();
             let mut due = [Instant::now(); 5];
             let mut sent: Vec<DeviceStatus> = Vec::new();
+            let mut last_forced: Option<Instant> = None;
             loop {
                 let now = Instant::now();
                 if due.iter().any(|d| *d <= now) {
@@ -118,8 +119,16 @@ pub fn start(ui: isize) -> PollerHandle {
                 }
                 let next = due.iter().min().copied().unwrap_or(now);
                 let ms = next.saturating_duration_since(Instant::now()).as_millis().min(u32::MAX as u128) as u32;
-                if WaitForSingleObject(event as _, ms) == 0 {
-                    due = [Instant::now(); 5]; // woken: read everything now
+                if event == 0 {
+                    std::thread::sleep(Duration::from_millis(ms as u64)); // no event: never spin
+                } else if WaitForSingleObject(event as _, ms) == 0 {
+                    // Woken (device change / resume / refresh): read everything now, but at most
+                    // once a minute while a game is fullscreen (Steam pads, BT endpoints churn).
+                    let now = Instant::now();
+                    if wake_allowed(gaming(), last_forced, now) {
+                        due = [now; 5];
+                        last_forced = Some(now);
+                    }
                 }
             }
         })
@@ -175,4 +184,29 @@ mod tests {
         let prev = vec![dev("ds", DeviceKind::Gamepad, Some(75), true), dev("pad:0", DeviceKind::Gamepad, None, true)];
         assert!(merge(&prev, vec![]).is_empty());
     }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn wake_always_allowed_outside_games() {
+        let now = Instant::now();
+        assert!(wake_allowed(false, Some(now), now));
+    }
+
+    #[test]
+    fn wake_rate_limited_while_gaming() {
+        let now = Instant::now();
+        assert!(wake_allowed(true, None, now));
+        assert!(!wake_allowed(true, Some(now), now + Duration::from_secs(10)));
+        assert!(wake_allowed(true, Some(now), now + Duration::from_secs(61)));
+    }
+}
+
+/// A forced (device-change / resume) read while gaming is allowed at most once a minute.
+pub fn wake_allowed(gaming: bool, last_forced: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    !gaming || last_forced.map_or(true, |t| now.saturating_duration_since(t) >= Duration::from_secs(60))
 }

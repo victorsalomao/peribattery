@@ -42,15 +42,42 @@ fn main() {
     }
 }
 
-/// First run installs a copy to %LOCALAPPDATA%\PeriBattery, turns on autostart and starts the
-/// installed copy. Every later start goes straight to the widget (one instance only).
+/// Asks a running instance to quit (WM_CLOSE to its controller) and waits up to 3 s.
+fn stop_running_instance() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOSE};
+    let class: Vec<u16> = "PeriBatteryController".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let h = FindWindowW(class.as_ptr(), std::ptr::null());
+        if h.is_null() {
+            return;
+        }
+        PostMessageW(h, WM_CLOSE, 0, 0);
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if FindWindowW(class.as_ptr(), std::ptr::null()).is_null() {
+                return;
+            }
+        }
+    }
+}
+
+/// Running from anywhere but the install folder with a different build (or nothing installed):
+/// replace the installed copy (stopping it first), turn on autostart the first time, and hand
+/// over to the installed copy. Otherwise go straight to the widget (one instance only).
 fn run_app() {
-    if !settings::is_installed() {
-        let copied = settings::ensure_installed();
-        settings::mark_installed();
-        settings::set_autostart(true);
-        if let Some(exe) = copied {
-            if std::process::Command::new(exe).spawn().is_ok() {
+    let (action, target) = settings::startup_action();
+    if let (settings::InstallAction::Install, Some(target)) = (action, target) {
+        stop_running_instance();
+        if settings::copy_self_to(&target) {
+            if !settings::is_installed() || settings::autostart_enabled() {
+                settings::set_autostart(true); // first install, or re-point an enabled Run entry
+            }
+            settings::mark_installed();
+            let mut cmd = std::process::Command::new(&target);
+            if let Some(dir) = target.parent() {
+                cmd.current_dir(dir); // don't keep the download folder busy
+            }
+            if cmd.spawn().is_ok() {
                 return;
             }
         }

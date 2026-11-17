@@ -98,7 +98,7 @@ lê os 3 → se algo mudou, `PostMessage` para a UI → UI redesenha **apenas se
 - **Thread em modo background** (`THREAD_MODE_BACKGROUND_BEGIN`): I/O e CPU com prioridade mínima,
   o escalonador nunca tira tempo do jogo.
 - **Zero alocação no ciclo de leitura**: buffers fixos de 65 bytes reaproveitados; sem JSON, sem serde.
-- **Sem `hidapi`/WinRT**: só `windows-sys` (bindings sem custo). Menos DLLs carregadas = menos RAM.
+- **Sem `hidapi`**: só `windows-sys` (bindings sem custo). WinRT (crate `windows`) apenas para Windows.Gaming.Input, carregado só quando existe um controle estilo Xbox.
 - **Redesenho só quando muda** e trim do working set (`SetProcessWorkingSetSize(-1,-1)`) após iniciar.
 - Handles HID abertos e fechados por leitura (não segura o dispositivo), com timeout de 1 s em cada leitura.
 - Intervalos: Zowie e G915 a cada 60 s; G435 a cada 120 s (sessão mais longa); DualSense a cada 60 s

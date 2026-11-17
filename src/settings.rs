@@ -91,17 +91,35 @@ pub fn install_path() -> Option<PathBuf> {
     Some(PathBuf::from(base).join(APP).join("PeriBattery.exe"))
 }
 
-/// Copies the running exe to `%LOCALAPPDATA%\PeriBattery` when it runs from elsewhere.
-/// Returns the installed path when a copy was made.
-pub fn ensure_installed() -> Option<PathBuf> {
-    let target = install_path()?;
-    let me = std::env::current_exe().ok()?;
-    if me.eq(&target) || std::fs::canonicalize(&me).ok() == std::fs::canonicalize(&target).ok() {
-        return None;
+/// What to do at startup, looking at the running exe and the installed copy.
+pub fn startup_action() -> (InstallAction, Option<PathBuf>) {
+    let (Some(target), Ok(me)) = (install_path(), std::env::current_exe()) else {
+        return (InstallAction::Run, None);
+    };
+    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let me_is_target = me == target || (target.exists() && canon(&me) == canon(&target));
+    let identical = !me_is_target
+        && target.exists()
+        && matches!((std::fs::read(&me), std::fs::read(&target)), (Ok(a), Ok(b)) if a == b);
+    (install_action(me_is_target, target.exists(), identical), Some(target))
+}
+
+/// Copies the running exe over the installed one. Retries while a just-closed copy still
+/// holds the file.
+pub fn copy_self_to(target: &Path) -> bool {
+    let Ok(me) = std::env::current_exe() else { return false };
+    if let Some(dir) = target.parent() {
+        if std::fs::create_dir_all(dir).is_err() {
+            return false;
+        }
     }
-    std::fs::create_dir_all(target.parent()?).ok()?;
-    std::fs::copy(&me, &target).ok()?;
-    Some(target)
+    for _ in 0..20 {
+        if std::fs::copy(&me, target).is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    false
 }
 
 #[cfg(test)]
@@ -118,5 +136,33 @@ mod tests {
     fn hidden_list_roundtrip() {
         assert_eq!(split_hidden("zowie;logi:c547:1;"), vec!["zowie".to_string(), "logi:c547:1".to_string()]);
         assert!(split_hidden("").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+
+    #[test]
+    fn install_decisions() {
+        assert_eq!(install_action(true, true, true), InstallAction::Run); // running the installed copy
+        assert_eq!(install_action(false, false, false), InstallAction::Install); // first run / folder deleted
+        assert_eq!(install_action(false, true, false), InstallAction::Install); // newer build
+        assert_eq!(install_action(false, true, true), InstallAction::Run); // same build elsewhere
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum InstallAction {
+    Run,
+    Install,
+}
+
+/// `me_is_target`: running from the install path; `identical`: installed exe has our bytes.
+pub fn install_action(me_is_target: bool, target_exists: bool, identical: bool) -> InstallAction {
+    if me_is_target || (target_exists && identical) {
+        InstallAction::Run
+    } else {
+        InstallAction::Install
     }
 }

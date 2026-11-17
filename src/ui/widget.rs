@@ -46,6 +46,7 @@ struct App {
     tray_icon: bool,
     menu_keys: Vec<String>,
     trimmed: bool,
+    drawn: Option<(u32, i32, bool)>,
 }
 
 thread_local! {
@@ -226,23 +227,39 @@ fn tooltip_text(items: &[DeviceStatus]) -> String {
 
 /// Redraws the strip and re-places it. Called on new data, theme or DPI change.
 unsafe fn redraw() {
-    let (widget, items, tip, controller) = with(|a| (a.widget, a.items.clone(), a.tooltip, a.controller));
+    let (widget, items) = with(|a| (a.widget, a.items.clone()));
     let shown = render::visible(&items, &settings::hidden());
     update_tooltip(&tooltip_text(&shown));
     if widget.is_null() || IsWindow(widget) == 0 {
         return;
     }
+    let Some(env) = draw_env() else { return };
+    let width = render::draw(widget, &shown, env.0, env.1, env.2);
+    with(|a| {
+        a.width = width;
+        a.drawn = Some(env);
+    });
+    place();
+}
+
+/// What the bitmap depends on: (taskbar dpi, taskbar height, light theme).
+unsafe fn draw_env() -> Option<(u32, i32, bool)> {
     let tray = find_tray();
     if tray.is_null() {
-        return;
+        return None;
     }
     let mut tr: RECT = zeroed();
     GetWindowRect(tray, &mut tr);
-    let dpi = GetDpiForWindow(tray).max(96);
-    let width = render::draw(widget, &shown, dpi, tr.bottom - tr.top, light_theme());
-    with(|a| a.width = width);
-    let _ = (tip, controller);
-    place();
+    Some((GetDpiForWindow(tray).max(96), tr.bottom - tr.top, light_theme()))
+}
+
+/// Periodic check: redraw if scale / taskbar height / theme changed, otherwise just re-place.
+unsafe fn refresh_if_stale() {
+    let drawn = with(|a| a.drawn);
+    match draw_env() {
+        Some(env) if render::needs_redraw(drawn, env) => redraw(),
+        _ => place(),
+    }
 }
 
 unsafe fn update_tooltip(text: &str) {
@@ -414,7 +431,7 @@ unsafe extern "system" fn controller_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
         }
         WM_TIMER if wp == TIMER_PLACE => {
             ensure_widget();
-            place();
+            refresh_if_stale();
             0
         }
         WM_TIMER if wp == TIMER_DEVCHANGE => {
@@ -447,12 +464,32 @@ unsafe extern "system" fn controller_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
             0
         }
         m if m != 0 && m == with(|a| a.taskbar_created) => {
-            // Explorer restarted: the old widget died with the old taskbar.
+            // Explorer restarted — or just re-broadcast (e.g. scale change) with the taskbar alive.
+            // Destroy a surviving widget so there is never a second, stale strip.
+            let old = with(|a| a.widget);
+            if !old.is_null() && IsWindow(old) != 0 {
+                DestroyWindow(old);
+            }
+            remove_tray_icon();
             with(|a| {
                 a.widget = null_mut();
                 a.tray_icon = false;
+                a.drawn = None;
             });
             ensure_widget();
+            0
+        }
+        WM_CLOSE => {
+            // taskkill without /f, or a newer build asking us to step aside.
+            let w = with(|a| a.widget);
+            if !w.is_null() && IsWindow(w) != 0 {
+                DestroyWindow(w);
+            }
+            DestroyWindow(hwnd);
+            0
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
             0
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),

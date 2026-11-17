@@ -232,3 +232,21 @@ mod tests {
         assert_eq!(String::from_utf16_lossy(&s[1].text), "—");
     }
 }
+
+#[cfg(test)]
+mod redraw_tests {
+    use super::*;
+
+    #[test]
+    fn redraw_when_dpi_height_or_theme_changes() {
+        assert!(needs_redraw(None, (96, 48, false)));
+        assert!(!needs_redraw(Some((96, 48, false)), (96, 48, false)));
+        assert!(needs_redraw(Some((96, 48, false)), (144, 72, false)));
+        assert!(needs_redraw(Some((96, 48, false)), (96, 48, true)));
+    }
+}
+
+/// (dpi, taskbar height, light theme) the bitmap was drawn for vs. now.
+pub fn needs_redraw(last: Option<(u32, i32, bool)>, now: (u32, i32, bool)) -> bool {
+    last != Some(now)
+}
