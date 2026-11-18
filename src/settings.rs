@@ -50,7 +50,7 @@ fn delete_value(key: &str, name: &str) {
 }
 
 pub fn autostart_enabled() -> bool {
-    get_string(RUN_KEY, APP).is_some()
+    get_string(RUN_KEY, APP).is_some() && approval_allows(get_binary(APPROVED_KEY, APP).as_deref())
 }
 
 /// Points the Run entry at the installed copy (or the running exe if not installed).
@@ -59,9 +59,11 @@ pub fn set_autostart(on: bool) {
         let exe = install_path().filter(|p| p.exists()).or_else(|| std::env::current_exe().ok());
         if let Some(exe) = exe {
             set_string(RUN_KEY, APP, &run_value(&exe));
+            set_binary(APPROVED_KEY, APP, &approved_bytes(true));
         }
     } else {
         delete_value(RUN_KEY, APP);
+        delete_value(APPROVED_KEY, APP);
     }
 }
 
@@ -304,5 +306,66 @@ pub fn remove_install_dir_later() {
             .current_dir(std::env::temp_dir())
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .spawn();
+    }
+}
+
+#[cfg(test)]
+mod approved_tests {
+    use super::*;
+
+    #[test]
+    fn approved_bytes_match_task_manager() {
+        assert_eq!(approved_bytes(true), [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(approved_bytes(false)[0], 3);
+    }
+
+    #[test]
+    fn approval_parsing() {
+        assert!(approval_allows(None)); // no mark: Windows' default is enabled
+        assert!(approval_allows(Some(&[2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+        assert!(approval_allows(Some(&[6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+        assert!(!approval_allows(Some(&[3, 0, 0, 0, 0x11, 0x22, 0, 0, 0, 0, 0, 0])));
+        assert!(!approval_allows(Some(&[7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+    }
+}
+
+/// Where Task Manager keeps each Run entry's on/off state. Some Windows 11 builds skip a Run
+/// entry that has no mark here, so we write "enabled" ourselves when autostart is turned on.
+const APPROVED_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+
+/// Task Manager's 12-byte value: 02 = enabled, 03 = disabled (+ FILETIME of the change).
+pub fn approved_bytes(on: bool) -> [u8; 12] {
+    let mut b = [0u8; 12];
+    b[0] = if on { 2 } else { 3 };
+    b
+}
+
+/// An odd first byte means the user disabled the entry in Task Manager / Settings.
+pub fn approval_allows(v: Option<&[u8]>) -> bool {
+    v.and_then(|b| b.first()).map_or(true, |f| f & 1 == 0)
+}
+
+fn get_binary(key: &str, name: &str) -> Option<Vec<u8>> {
+    use windows_sys::Win32::System::Registry::*;
+    let (k, n) = (wide(key), wide(name));
+    let mut buf = [0u8; 64];
+    let mut size = buf.len() as u32;
+    let rc = unsafe { RegGetValueW(HKEY_CURRENT_USER, k.as_ptr(), n.as_ptr(), RRF_RT_REG_BINARY, std::ptr::null_mut(), buf.as_mut_ptr() as _, &mut size) };
+    (rc == 0).then(|| buf[..(size as usize).min(buf.len())].to_vec())
+}
+
+fn set_binary(key: &str, name: &str, value: &[u8]) {
+    use windows_sys::Win32::System::Registry::*;
+    let (k, n) = (wide(key), wide(name));
+    unsafe {
+        RegSetKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), n.as_ptr(), REG_BINARY, value.as_ptr() as _, value.len() as u32);
+    }
+}
+
+/// Older builds wrote only the Run value; add the missing "enabled" mark (never overrides a
+/// user's "disabled").
+pub fn repair_autostart() {
+    if get_string(RUN_KEY, APP).is_some() && get_binary(APPROVED_KEY, APP).is_none() {
+        set_binary(APPROVED_KEY, APP, &approved_bytes(true));
     }
 }

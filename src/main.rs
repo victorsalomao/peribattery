@@ -119,6 +119,7 @@ fn run_app() {
             return; // already running
         }
     }
+    settings::repair_autostart();
     std::process::exit(ui::widget::run());
 }
 
