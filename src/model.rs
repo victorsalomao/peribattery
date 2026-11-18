@@ -6,6 +6,8 @@ pub enum DeviceKind {
     Keyboard,
     Headset,
     Gamepad,
+    /// Bluetooth device we could not classify (shown with the Bluetooth icon).
+    Other,
 }
 
 #[derive(Clone, PartialEq, Debug)]

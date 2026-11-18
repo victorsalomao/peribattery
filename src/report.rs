@@ -66,6 +66,15 @@ pub fn build(devices: &[crate::model::DeviceStatus]) -> String {
     for (vid, pid, page, usage, name) in &rows {
         out.push_str(&format!("  {}\r\n", line(*vid, *pid, *page, *usage, name.as_deref())));
     }
+    out.push_str("\r\nBluetooth pareados com nível de bateria no Windows:\r\n");
+    let bt = crate::devices::bluetooth::probe();
+    if bt.is_empty() {
+        out.push_str("  (nenhum)\r\n");
+    }
+    for d in &bt {
+        let state = if d.connected { "conectado" } else { "desligado" };
+        out.push_str(&format!("  {:?}: {} — {}% — {state}\r\n", d.kind, d.name, d.percent.unwrap_or(0)));
+    }
     out.push_str("\r\nCole este texto numa issue do GitHub com o nome do seu mouse, teclado, fone e controle.\r\n");
     out
 }

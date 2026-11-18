@@ -32,9 +32,10 @@ Para atualizar, baixe o `.exe` novo e abra do mesmo jeito: ele substitui a vers�
 | PS5 DualSense / DualSense Edge (USB ou Bluetooth) | ✅ % e carregamento |
 | Controles Xbox e compatíveis (Bluetooth ou adaptador) | ✅ % (pela API de jogos do Windows) |
 | 8BitDo com dongle 2.4 GHz | ⚠️ aparece conectado, mas sem % (o dongle não informa) |
-| Razer, HyperX, Corsair, SteelSeries e outros | ❌ ainda não. Mande o relatório (abaixo) para entrar na lista. |
+| **Qualquer fone, mouse ou teclado Bluetooth** que mostre a bateria em *Configurações ➜ Bluetooth* (AirPods, Galaxy Buds, Sony WH/WF, JBL, MX Master, Keychron…) | ✅ % (o mesmo valor que o Windows mostra) |
+| Razer, HyperX, Corsair, SteelSeries e outros **com dongle 2.4 GHz** | ❌ ainda não. Mande o relatório (abaixo) para entrar na lista. |
 
-O app lê cada dispositivo a cada 5 s (o G435 a cada 15 s). Ele só envia comandos de **leitura** de bateria e nunca altera configurações dos periféricos.
+O app lê cada dispositivo a cada 5 s (o G435 e os Bluetooth a cada 15 s). Dispositivos Bluetooth que o app não reconhece como mouse, teclado ou fone aparecem com o ícone do Bluetooth. Ele só envia comandos de **leitura** de bateria e nunca altera configurações dos periféricos.
 
 ## Menu (clique direito no widget)
 

@@ -1,5 +1,6 @@
 //! One module per protocol. Each `poll` opens, queries and closes; nothing stays open.
 
+pub mod bluetooth;
 pub mod dualsense;
 pub mod g435;
 pub mod hidpp;
@@ -17,10 +18,11 @@ pub enum Source {
     G435,
     Ds,
     Pad,
+    Bt,
 }
 
 impl Source {
-    pub const ALL: [Source; 5] = [Source::Zowie, Source::Logi, Source::G435, Source::Ds, Source::Pad];
+    pub const ALL: [Source; 6] = [Source::Zowie, Source::Logi, Source::G435, Source::Ds, Source::Pad, Source::Bt];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -29,6 +31,7 @@ impl Source {
             Source::G435 => "g435",
             Source::Ds => "ds",
             Source::Pad => "pad",
+            Source::Bt => "bt",
         }
     }
 
@@ -39,6 +42,7 @@ impl Source {
             Source::G435 => g435::poll(infos).into_iter().collect(),
             Source::Ds => dualsense::poll(infos).into_iter().collect(),
             Source::Pad => xbox::poll(infos.iter().any(|i| i.vid == 0x045E || i.vid == xbox::VID_8BITDO)),
+            Source::Bt => bluetooth::poll(),
         }
     }
 }

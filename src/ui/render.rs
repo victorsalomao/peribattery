@@ -15,6 +15,7 @@ pub fn icon(kind: DeviceKind) -> char {
         DeviceKind::Keyboard => '\u{E765}',
         DeviceKind::Headset => '\u{E7F6}',
         DeviceKind::Gamepad => '\u{E7FC}',
+        DeviceKind::Other => '\u{E702}', // Bluetooth
     }
 }
 const BOLT: char = '\u{E945}';

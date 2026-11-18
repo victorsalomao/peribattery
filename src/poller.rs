@@ -11,7 +11,11 @@ pub const WM_APP_STATUS: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_A
 pub fn interval_for(key: &str, _gaming: bool) -> Duration {
     // Same in games: a read costs tens of µs of CPU once the device list and handles are cached.
     // The G435 session is ~1 s of radio traffic to the headset, so it stays at 15 s.
-    Duration::from_secs(if key == "g435" { 15 } else { 5 })
+    Duration::from_secs(match key {
+        "g435" => 15,
+        "bt" => 15, // Windows refreshes this value itself, rarely; the lookup costs no radio traffic
+        _ => 5,
+    })
 }
 
 fn is_controller(key: &str) -> bool {
@@ -51,6 +55,7 @@ fn kind_rank(k: DeviceKind) -> u8 {
         DeviceKind::Headset => 1,
         DeviceKind::Keyboard => 2,
         DeviceKind::Mouse => 3,
+        DeviceKind::Other => 4,
     }
 }
 
@@ -94,8 +99,8 @@ pub fn start(ui: isize) -> PollerHandle {
         .stack_size(256 * 1024)
         .spawn(move || unsafe {
             SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
-            let mut last: [Vec<DeviceStatus>; 5] = Default::default();
-            let mut due = [Instant::now(); 5];
+            let mut last: [Vec<DeviceStatus>; Source::ALL.len()] = Default::default();
+            let mut due = [Instant::now(); Source::ALL.len()];
             let mut sent: Vec<DeviceStatus> = Vec::new();
             let mut last_forced: Option<Instant> = None;
             let started = Instant::now();
@@ -151,7 +156,7 @@ pub fn start(ui: isize) -> PollerHandle {
                     // once a minute while a game is fullscreen (Steam pads, BT endpoints churn).
                     let now = Instant::now();
                     if wake_allowed(gaming(), last_forced, now) {
-                        due = [now; 5];
+                        due = [now; Source::ALL.len()];
                         last_forced = Some(now);
                         woke = true; // something was plugged: refresh the device list
                     }
@@ -256,6 +261,7 @@ mod enum_tests {
             assert_eq!(interval_for("ds", g), Duration::from_secs(5));
             assert_eq!(interval_for("pad", g), Duration::from_secs(5));
             assert_eq!(interval_for("g435", g), Duration::from_secs(15));
+            assert_eq!(interval_for("bt", g), Duration::from_secs(15));
         }
     }
 }

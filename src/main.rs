@@ -44,6 +44,13 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_millis(1500));
             }
         }
+        "--bt-probe" => {
+            attach_console();
+            for d in devices::bluetooth::probe() {
+                let state = if d.connected { "conectado" } else { "desligado" };
+                println!("{:<9?} {} — {}% — {state}", d.kind, d.name, d.percent.unwrap_or(0));
+            }
+        }
         "--bench" => {
             attach_console();
             bench::run();
