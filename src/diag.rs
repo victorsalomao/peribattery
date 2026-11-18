@@ -26,7 +26,7 @@ pub fn log(d: &DeviceStatus) {
     }
 }
 
-fn now_hms() -> String {
+pub fn now_hms() -> String {
     let mut st: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
     unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut st) };
     format!("{:02}/{:02} {:02}:{:02}:{:02}", st.wDay, st.wMonth, st.wHour, st.wMinute, st.wSecond)

@@ -7,6 +7,7 @@ mod estimate;
 mod hid;
 mod model;
 mod poller;
+mod report;
 mod settings;
 mod ui;
 
@@ -47,14 +48,22 @@ fn main() {
             attach_console();
             bench::run();
         }
+        "--uninstall" => {
+            stop_running_instance();
+            settings::uninstall();
+            message("PeriBattery foi removido deste computador.");
+            settings::remove_install_dir_later();
+        }
+        "--report" => {
+            report::write_and_open(&devices::poll_all());
+        }
         "--once" => {
             attach_console();
             for mut s in devices::poll_all() {
                 let learned = settings::learned(&s.key);
                 estimate::annotate(&mut s, &mut estimate::Tracker::default(), 0, &learned);
                 let mv = s.millivolts.map(|v| format!(" [{v} mV]")).unwrap_or_default();
-                println!("{:<9?} {}{}", s.kind, ui::widget::device_line(&s).replace("
-", " — "), mv);
+                println!("{:<9?} {}{}", s.kind, ui::widget::device_line(&s).replace('\r', "").replace('\n', " — "), mv);
             }
         }
         _ => run_app(),
@@ -92,6 +101,7 @@ fn run_app() {
                 settings::set_autostart(true); // first install, or re-point an enabled Run entry
             }
             settings::mark_installed();
+            settings::register_uninstall(&target);
             let mut cmd = std::process::Command::new(&target);
             if let Some(dir) = target.parent() {
                 cmd.current_dir(dir); // don't keep the download folder busy
@@ -110,4 +120,13 @@ fn run_app() {
         }
     }
     std::process::exit(ui::widget::run());
+}
+
+fn message(text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
+    let t: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let c: Vec<u16> = "PeriBattery".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), MB_OK | MB_ICONINFORMATION);
+    }
 }

@@ -31,6 +31,7 @@ const WM_TRAY: u32 = WM_APP + 2;
 const CMD_REFRESH: usize = 1;
 const CMD_AUTOSTART: usize = 2;
 const CMD_EXIT: usize = 3;
+const CMD_REPORT: usize = 4;
 const CMD_HIDE_BASE: usize = 100;
 
 #[derive(Default)]
@@ -367,6 +368,7 @@ unsafe fn show_menu() {
     if !items.is_empty() {
         add(menu, MF_POPUP, hide as usize, "Ocultar");
     }
+    add(menu, MF_STRING, CMD_REPORT, "Relatório de dispositivos…");
     add(menu, MF_SEPARATOR, 0, "");
     add(menu, MF_STRING, CMD_EXIT, "Sair");
     let mut pt: POINT = zeroed();
@@ -382,6 +384,10 @@ unsafe fn show_menu() {
             }
         }
         CMD_AUTOSTART => settings::set_autostart(!settings::autostart_enabled()),
+        CMD_REPORT => {
+            // Off the UI thread: it reads every HID device once.
+            let _ = std::thread::Builder::new().name("report".into()).spawn(move || crate::report::write_and_open(&items));
+        }
         CMD_EXIT => {
             let w = with(|a| a.widget);
             if !w.is_null() {

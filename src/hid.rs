@@ -49,6 +49,11 @@ fn vid_pid(path: &str) -> (Option<u16>, Option<u16>) {
 /// Lists HID collections whose vendor id is in `filter_vid`. Devices of other vendors are
 /// skipped by path before being opened.
 pub fn enumerate(filter_vid: &[u16]) -> Vec<HidInfo> {
+    enumerate_where(|vid| filter_vid.contains(&vid))
+}
+
+/// Every HID collection whose vendor passes `keep`.
+pub fn enumerate_where(keep: impl Fn(u16) -> bool) -> Vec<HidInfo> {
     let mut out = Vec::new();
     unsafe {
         let mut guid: GUID = zeroed();
@@ -82,7 +87,7 @@ pub fn enumerate(filter_vid: &[u16]) -> Vec<HidInfo> {
             let wide = std::slice::from_raw_parts(p, len);
             let lower = String::from_utf16_lossy(wide).to_ascii_lowercase();
             let (Some(vid), pid) = vid_pid(&lower) else { continue };
-            if !filter_vid.contains(&vid) {
+            if !keep(vid) {
                 continue;
             }
             let mut path = wide.to_vec();
@@ -243,5 +248,21 @@ mod bt_path_tests {
         assert_eq!(vid_pid(p), (Some(0x054C), Some(0x0CE6)));
         let usb = r"\?\hid#vid_046d&pid_c547&mi_02&col02#8&24348baf&0&0001#{4d1e55b2}";
         assert_eq!(vid_pid(usb), (Some(0x046D), Some(0xC547)));
+    }
+}
+
+/// The product string the device reports (query-only open), if any.
+pub fn product_name(info: &HidInfo) -> Option<String> {
+    unsafe {
+        let h = CreateFileW(info.path.as_ptr(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, 0, null_mut());
+        if h == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut buf = [0u16; 128];
+        let ok = HidD_GetProductString(h, buf.as_mut_ptr() as _, (buf.len() * 2) as u32) != 0;
+        CloseHandle(h);
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let s = String::from_utf16_lossy(&buf[..end]).trim().to_string();
+        (ok && !s.is_empty()).then_some(s)
     }
 }

@@ -225,3 +225,84 @@ mod rate_tests {
         assert_eq!(parse_rates("lixo").discharge, None);
     }
 }
+
+#[cfg(test)]
+mod uninstall_tests {
+    use super::*;
+
+    #[test]
+    fn uninstall_entry_points_at_installed_exe() {
+        let exe = Path::new(r"C:\Users\A B\AppData\Local\PeriBattery\PeriBattery.exe");
+        let v = uninstall_values(exe, "0.2.0");
+        let get = |n: &str| v.iter().find(|(k, _)| *k == n).map(|(_, s)| s.clone());
+        assert_eq!(get("DisplayName").as_deref(), Some("PeriBattery"));
+        assert_eq!(get("DisplayVersion").as_deref(), Some("0.2.0"));
+        assert_eq!(get("UninstallString").as_deref(), Some(r#""C:\Users\A B\AppData\Local\PeriBattery\PeriBattery.exe" --uninstall"#));
+        assert_eq!(get("InstallLocation").as_deref(), Some(r"C:\Users\A B\AppData\Local\PeriBattery"));
+        assert_eq!(get("DisplayIcon").as_deref(), Some(r#""C:\Users\A B\AppData\Local\PeriBattery\PeriBattery.exe""#));
+    }
+}
+
+const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\PeriBattery";
+
+/// String values of the "Apps & features" entry for the installed exe.
+pub fn uninstall_values(exe: &Path, version: &str) -> Vec<(&'static str, String)> {
+    let dir = exe.parent().map(|d| d.display().to_string()).unwrap_or_default();
+    vec![
+        ("DisplayName", APP.to_string()),
+        ("DisplayVersion", version.to_string()),
+        ("Publisher", "PeriBattery".to_string()),
+        ("DisplayIcon", run_value(exe)),
+        ("UninstallString", format!("{} --uninstall", run_value(exe))),
+        ("InstallLocation", dir),
+        ("URLInfoAbout", "https://github.com/victorsalomao/peribattery".to_string()),
+    ]
+}
+
+fn set_dword(key: &str, name: &str, value: u32) {
+    use windows_sys::Win32::System::Registry::*;
+    let (k, n) = (wide(key), wide(name));
+    unsafe {
+        RegSetKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), n.as_ptr(), REG_DWORD, &value as *const u32 as _, 4);
+    }
+}
+
+fn delete_tree(key: &str) {
+    let k = wide(key);
+    unsafe {
+        windows_sys::Win32::System::Registry::RegDeleteTreeW(windows_sys::Win32::System::Registry::HKEY_CURRENT_USER, k.as_ptr());
+    }
+}
+
+/// Registers the installed copy in Settings › Apps (per user, no admin).
+pub fn register_uninstall(exe: &Path) {
+    for (name, value) in uninstall_values(exe, env!("CARGO_PKG_VERSION")) {
+        set_string(UNINSTALL_KEY, name, &value);
+    }
+    set_dword(UNINSTALL_KEY, "NoModify", 1);
+    set_dword(UNINSTALL_KEY, "NoRepair", 1);
+    let kb = std::fs::metadata(exe).map(|m| (m.len() / 1024) as u32).unwrap_or(0);
+    set_dword(UNINSTALL_KEY, "EstimatedSize", kb);
+}
+
+/// Removes autostart, settings and the Apps entry.
+pub fn uninstall() {
+    set_autostart(false);
+    delete_tree(APP_KEY);
+    delete_tree(UNINSTALL_KEY);
+}
+
+/// Deletes the install folder about 2 s after this process exits (call it last).
+pub fn remove_install_dir_later() {
+    if let Some(dir) = install_path().and_then(|p| p.parent().map(Path::to_path_buf)) {
+        use std::os::windows::process::CommandExt;
+        // The running exe can't delete itself: a hidden cmd waits ~2 s, then removes the folder.
+        let script = format!("ping -n 3 127.0.0.1 >nul & rmdir /s /q \"{}\"", dir.display());
+        let _ = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c"])
+            .raw_arg(&script)
+            .current_dir(std::env::temp_dir())
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .spawn();
+    }
+}
